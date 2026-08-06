@@ -223,10 +223,23 @@ function AgentPanel(props: {
         })
         break
       case 'thought':
-        setMessages((prev) => [
-          ...prev,
-          { id: Date.now(), role: 'system', content: `思考：${ev.text}`, ts: new Date().toISOString() },
-        ])
+        // 思考内容逐 token 流式到达：累积进同一个思考块，而不是每条新建。
+        setMessages((prev) => {
+          const copy = [...prev]
+          const last = copy[copy.length - 1]
+          if (last && last.role === 'system' && last.streaming) {
+            copy[copy.length - 1] = { ...last, content: last.content + ev.text }
+          } else {
+            copy.push({
+              id: Date.now(),
+              role: 'system',
+              content: `思考：${ev.text}`,
+              ts: new Date().toISOString(),
+              streaming: true,
+            })
+          }
+          return copy
+        })
         break
       case 'tool_call':
         setMessages((prev) => [
@@ -243,7 +256,7 @@ function AgentPanel(props: {
         setMessages((prev) => {
           const copy = [...prev]
           const last = copy[copy.length - 1]
-          if (last && last.role === 'assistant' && last.streaming) {
+          if (last && last.streaming) {
             copy[copy.length - 1] = { ...last, streaming: false }
           }
           return copy
@@ -406,18 +419,31 @@ function AgentPanel(props: {
       <div className="chat">
         <div className="messages">
           {messages.length === 0 && <p className="empty">暂无对话。连接后发送消息，历史会自动保存在工作区。</p>}
-          {messages.map((m) => (
-            <div key={m.id} className={`msg msg-${m.role}`}>
-              <div className="msg-meta">
-                {m.role === 'user' ? '你' : m.role === 'assistant' ? 'Agent' : '系统'}
-                {m.model ? ` · ${m.model}` : ''}
+          {messages.map((m) => {
+            const isThought = m.role === 'system' && m.content.startsWith('思考：')
+            return (
+              <div key={m.id} className={`msg msg-${m.role}`}>
+                <div className="msg-meta">
+                  {m.role === 'user' ? '你' : m.role === 'assistant' ? 'Agent' : isThought ? '💭 思考' : '系统'}
+                  {m.model ? ` · ${m.model}` : ''}
+                </div>
+                {isThought ? (
+                  <details className="thought" open={m.streaming}>
+                    <summary>{m.streaming ? '思考中…' : '思考'}</summary>
+                    <div className="msg-body">
+                      {m.content.slice(3)}
+                      {m.streaming && <span className="cursor">▌</span>}
+                    </div>
+                  </details>
+                ) : (
+                  <div className="msg-body">
+                    {m.content}
+                    {m.streaming && <span className="cursor">▌</span>}
+                  </div>
+                )}
               </div>
-              <div className="msg-body">
-                {m.content}
-                {m.streaming && <span className="cursor">▌</span>}
-              </div>
-            </div>
-          ))}
+            )
+          })}
           <div ref={chatBottom} />
         </div>
         <div className="composer">

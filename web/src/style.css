@@ -295,6 +295,19 @@ button.danger {
   font-size: 12px;
 }
 
+.thought summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.thought .msg-body {
+  font-size: 12px;
+  color: var(--muted);
+  border-style: dashed;
+}
+
 .msg-meta {
   font-size: 12px;
   color: var(--muted);
