@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +164,55 @@ func fakeSpawn(modeFn func(spawnNum int) string, spawns *int) func(string, strin
 			return nil, err
 		}
 		return &acpProcess{cmd: cmd, stdin: stdin, stdout: stdout, exited: make(chan struct{})}, nil
+	}
+}
+
+func TestWriteQwenPawConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &RuntimeConfig{
+		BaseURL: "https://api.example.com/v1",
+		APIKey:  "sk-secret",
+		Model:   "qwen-max",
+	}
+	if err := writeQwenPawConfig(dir, dir+".secret", cfg); err != nil {
+		t.Fatalf("writeQwenPawConfig: %v", err)
+	}
+
+	files := map[string]string{
+		"config.json":                   "agents",
+		"workspaces/default/agent.json": "runtime-openai",
+	}
+	for rel, want := range files {
+		data, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatalf("读取 %s: %v", rel, err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s 应包含 %q，实际: %s", rel, want, data)
+		}
+	}
+	// SECRET_DIR 是 <cfgDir>.secret（后缀形式，非子目录），providers 在其下。
+	for rel, want := range map[string]string{
+		"providers/custom/runtime-openai.json": "api_key",
+		"providers/active_model.json":          "qwen-max",
+	} {
+		data, err := os.ReadFile(filepath.Join(dir+".secret", rel))
+		if err != nil {
+			t.Fatalf("读取 %s: %v", rel, err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s 应包含 %q，实际: %s", rel, want, data)
+		}
+	}
+
+	// 凭证只出现在临时目录，且文件权限收紧。
+	providerFile := filepath.Join(dir+".secret", "providers/custom/runtime-openai.json")
+	fi, _ := os.Stat(providerFile)
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("provider 文件权限应为 0600，实际 %o", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "api_key")); !os.IsNotExist(err) {
+		t.Fatal("凭证不应出现在配置根目录其他位置")
 	}
 }
 

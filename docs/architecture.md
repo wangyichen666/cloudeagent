@@ -47,9 +47,10 @@ sequenceDiagram
 
 关键设计：
 
-- **凭证不落盘**：子进程以 `--runtime-provider openai-env` 启动，模型配置通过
-  `OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL` 环境变量注入，进程退出即销毁；
-  模型热切换 = 重启子进程注入新凭证（`SyncConfig`），工作区数据不丢。
+- **凭证不落盘**：模型配置由 agent-runtime 生成到**临时配置目录**
+  （进程/容器用系统临时目录，K8s Pod 用 emptyDir 挂载的 `QWENPAW_CONFIG_DIR`），
+  `QWENPAW_WORKING_DIR/QWENPAW_SECRET_DIR` 指向该目录，进程退出即销毁；
+  模型热切换 = 重启子进程重新生成配置（`SyncConfig`），工作区数据不丢。
 - **有状态**：`--workspace` 直接指向用户持久工作区；对话历史另有
   `.agent/conversation.jsonl` 兜底，休眠/唤醒、内核重启后消息序号连续。
 - **权限策略**：`session/request_permission` 默认拒绝（headless 安全）；

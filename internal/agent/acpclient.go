@@ -10,8 +10,9 @@ package agent
 //	    session/update 通知：流式消息 / 思考 / 工具调用
 //	    session/request_permission：权限请求（策略默认拒绝，可挂接回调）
 //
-// 模型凭证不落盘：子进程启动时通过 OPENAI_BASE_URL / OPENAI_API_KEY /
-// OPENAI_MODEL 环境变量注入（qwenpaw --runtime-provider openai-env），
+// 模型凭证不落盘：子进程启动前把 base_url/api_key/model 生成到临时配置目录
+// （进程/容器用系统临时目录，K8s Pod 用 emptyDir 挂载的 QWENPAW_CONFIG_DIR），
+// 并通过 QWENPAW_WORKING_DIR / QWENPAW_SECRET_DIR 指给 qwenpaw；
 // 进程退出即销毁；配置热切换 = 重启 ACP 子进程，工作区数据不丢。
 //
 // 自愈：子进程异常退出后，下一次请求自动重启并重建会话。
@@ -26,6 +27,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +78,7 @@ type ACPServer struct {
 	handlers     map[string]UpdateHandler // acp session id -> 本次 prompt 的流式订阅者
 	sessions     map[string]string        // localKey -> acp session id
 	spawnedCfg   *RuntimeConfig           // 本次启动子进程时使用的模型配置
+	cfgDir       string                   // 本次启动时为 qwenpaw 生成的临时配置目录
 	connected    bool
 	agentName    string
 	agentVersion string
@@ -95,6 +98,7 @@ type acpProcess struct {
 	stdin   io.WriteCloser
 	stdout  io.ReadCloser
 	exited  chan struct{} // watchProc 独占调用 Wait 后关闭；killLocked 据此等待退出
+	cfgDir  string        // 本次进程的 qwenpaw 临时配置目录（Stop 时清理）
 }
 
 // PermissionRequest 是 ACP 权限请求的最小视图（来自 session/request_permission）。
@@ -206,6 +210,7 @@ func (a *ACPServer) start(ctx context.Context) error {
 
 	a.mu.Lock()
 	a.proc = proc
+	a.cfgDir = proc.cfgDir
 	a.connected = false
 	a.lastRestart = time.Now()
 	a.mu.Unlock()
@@ -252,10 +257,26 @@ func spawnACPProcess(bin, workspace string, env []string) (*acpProcess, error) {
 	// agent-runtime（跨多个 HTTP/WS 请求存活），只在 Stop/Restart 时终止。
 	cmd := exec.Command(bin, "acp",
 		"--workspace", workspace,
-		"--runtime-provider", "openai-env",
 		"--local-diagnostics",
 	)
-	cmd.Env = env
+	// 容器内根文件系统可能是只读（k8s 加固配置）：
+	// 把 Python/临时文件目录指到用户工作区，保证 QwenPaw 可写。
+	tmpDir := filepath.Join(workspace, ".tmp")
+	_ = os.MkdirAll(tmpDir, 0o755)
+	cfg := envRuntimeConfig(env)
+	cfgDir, err := qwenpawConfigDir(env)
+	if err != nil {
+		return nil, err
+	}
+	secretDir := qwenpawSecretDir(env, cfgDir)
+	if err := writeQwenPawConfig(cfgDir, secretDir, cfg); err != nil {
+		return nil, err
+	}
+	cmd.Env = append(env,
+		"TMPDIR="+tmpDir,
+		"QWENPAW_WORKING_DIR="+cfgDir,
+		"QWENPAW_SECRET_DIR="+secretDir,
+	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -268,7 +289,135 @@ func spawnACPProcess(bin, workspace string, env []string) (*acpProcess, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &acpProcess{cmd: cmd, stdin: stdin, stdout: stdout, exited: make(chan struct{})}, nil
+	return &acpProcess{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		exited: make(chan struct{}),
+		cfgDir: cfgDir,
+	}, nil
+}
+
+// envRuntimeConfig 从环境变量中取回模型配置（start 注入的 OPENAI_*）。
+func envRuntimeConfig(env []string) *RuntimeConfig {
+	cfg := &RuntimeConfig{}
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "OPENAI_BASE_URL":
+			cfg.BaseURL = v
+		case "OPENAI_API_KEY":
+			cfg.APIKey = v
+		case "OPENAI_MODEL":
+			cfg.Model = v
+		}
+	}
+	return cfg
+}
+
+// qwenpawConfigDir 返回 QwenPaw 配置根目录：
+//   - QWENPAW_CONFIG_DIR（容器内 emptyDir 挂载，凭证不落盘）优先；
+//   - 否则在系统临时目录下创建（进程/Docker 后端，退出即清理由调用方负责）。
+func qwenpawConfigDir(env []string) (string, error) {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "QWENPAW_CONFIG_DIR=") {
+			dir := strings.TrimPrefix(kv, "QWENPAW_CONFIG_DIR=")
+			if dir != "" {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					return "", err
+				}
+				return dir, nil
+			}
+		}
+	}
+	dir, err := os.MkdirTemp("", "qwenpaw-cfg-")
+	if err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// qwenpawSecretDir 返回凭证目录（providers/active_model 所在）。
+// 显式设置 QWENPAW_SECRET_DIR（如 emptyDir 内部）优先，避免只读根文件系统上
+// 默认的 "<WORKING_DIR>.secret" 兄弟路径不可写。
+func qwenpawSecretDir(env []string, cfgDir string) string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "QWENPAW_SECRET_DIR=") {
+			if dir := strings.TrimPrefix(kv, "QWENPAW_SECRET_DIR="); dir != "" {
+				return dir
+			}
+		}
+	}
+	return cfgDir + ".secret"
+}
+
+// writeQwenPawConfig 为 qwenpaw acp（2.x）生成最小配置：
+// 凭证只写进临时目录（emptyDir/系统 tmp），进程退出即销毁，绝不写入持久工作区。
+func writeQwenPawConfig(cfgDir, secretDir string, cfg *RuntimeConfig) error {
+	providerID := "runtime-openai"
+	agentDir := filepath.Join(cfgDir, "workspaces", "default")
+	providersDir := filepath.Join(secretDir, "providers", "custom")
+	for _, dir := range []string{agentDir, providersDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+
+	write := func(path string, v any) error {
+		data, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, data, 0o600)
+	}
+
+	// 根配置：仅声明 agent 档案引用。
+	if err := write(filepath.Join(cfgDir, "config.json"), map[string]any{
+		"agents": map[string]any{
+			"active_agent": "default",
+			"profiles": map[string]any{
+				"default": map[string]any{
+					"id":             "default",
+					"workspace_dir":  agentDir,
+					"enabled":        true,
+				},
+			},
+		},
+	}); err != nil {
+		return err
+	}
+	// agent 档案：活动模型。
+	if err := write(filepath.Join(agentDir, "agent.json"), map[string]any{
+		"id":           "default",
+		"name":         "default",
+		"active_model": map[string]any{"provider_id": providerID, "model": cfg.Model},
+	}); err != nil {
+		return err
+	}
+	// 自定义 OpenAI 兼容 provider（含凭证，仅存临时目录）。
+	if err := write(filepath.Join(providersDir, providerID+".json"), map[string]any{
+		"id":                       providerID,
+		"name":                     "ACP Runtime OpenAI",
+		"base_url":                 cfg.BaseURL,
+		"api_key":                  cfg.APIKey,
+		"chat_model":               "OpenAIChatModel",
+		"models":                   []map[string]any{{"id": cfg.Model, "name": cfg.Model}},
+		"extra_models":             []any{},
+		"is_custom":                true,
+		"support_connection_check": false,
+		"support_model_discovery":  false,
+	}); err != nil {
+		return err
+	}
+	// ProviderManager 的活动模型。
+	if err := write(filepath.Join(secretDir, "providers", "active_model.json"),
+		map[string]any{"provider_id": providerID, "model": cfg.Model}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // watchProc 在子进程退出时清理状态（自愈：下一次请求自动重启）。
@@ -647,6 +796,10 @@ func (a *ACPServer) killLocked() error {
 	proc := a.proc
 	a.proc = nil
 	a.connected = false
+	if a.cfgDir != "" {
+		_ = os.RemoveAll(a.cfgDir)
+		a.cfgDir = ""
+	}
 	// 子进程的内存态会话随之失效：清空映射，重启后重新 session/new。
 	a.sessions = make(map[string]string)
 	a.handlers = make(map[string]UpdateHandler)

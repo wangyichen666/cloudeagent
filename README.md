@@ -53,7 +53,7 @@ agent-runtime ──(ACP stdio JSON-RPC)──> qwenpaw acp（QwenPaw 2.x 内核
 
 默认 demo 使用 mock LLM 兜底；要启用真正的 Agent 内核，只需满足两个条件：
 
-1. **安装 QwenPaw 2.x**（ACP 能力需要 `>=2.0`，v1.x 不支持 `--runtime-provider`）：
+1. **安装 QwenPaw 2.x**（ACP 能力需要 `>=2.0`）：
 
    ```bash
    pip install -U qwenpaw
@@ -78,9 +78,11 @@ agent-runtime ──(ACP stdio JSON-RPC)──> qwenpaw acp（QwenPaw 2.x 内核
 原理与关键设计：
 
 - `agent-runtime` 实现 **ACP v1 客户端**（`internal/agent/acpclient.go`），
-  以 stdio JSON-RPC 管理 `qwenpaw acp --workspace <用户工作区> --runtime-provider openai-env` 子进程。
-- **凭证不落盘**：模型配置经 `OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL`
-  环境变量注入，进程退出即销毁；模型热切换 = 重启子进程注入新凭证，工作区数据不丢。
+  以 stdio JSON-RPC 管理 `qwenpaw acp --workspace <用户工作区>` 子进程。
+- **凭证不落盘**：模型配置（base_url/api_key/model）由 agent-runtime 在启动内核前
+  生成到**临时配置目录**（进程后端/容器用系统临时目录，K8s Pod 用 emptyDir 挂载的
+  `QWENPAW_CONFIG_DIR`），进程退出即销毁；模型热切换 = 重启子进程重新生成配置，
+  工作区数据不丢。
 - **有状态**：`--workspace` 指向用户持久工作区；会话历史另有
   `.agent/conversation.jsonl` 兜底，休眠/唤醒与内核重启后消息序号连续。
 - **权限策略**：QwenPaw Tool Guard 的权限请求默认拒绝（headless 安全），

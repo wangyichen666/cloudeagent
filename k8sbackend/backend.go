@@ -198,11 +198,23 @@ func (b *Backend) buildStatefulSet(userID string, replicas int32) *appsv1.Statef
 						FSGroup:      &fsGroup,
 						RunAsNonRoot: &runAsNonRoot,
 					},
+					// emptyDir：只承载运行时凭证配置，Pod 销毁即清空。
+					Volumes: []corev1.Volume{
+						{Name: "qwenpaw-cfg", VolumeSource: corev1.VolumeSource{
+							EmptyDir: &corev1.EmptyDirVolumeSource{},
+						}},
+					},
 					Containers: []corev1.Container{{
 						Name:            "agent",
 						Image:           b.cfg.Image,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						Args:            []string{"--listen", "0.0.0.0:18585", "--workspace", workspaceMount},
+						// 模型凭证只写入 emptyDir（容器重启即销毁），绝不进 PVC：
+						// agent-runtime 启动 qwenpaw 时把 OPENAI_* 配置生成到该目录。
+						Env: []corev1.EnvVar{
+							{Name: "QWENPAW_CONFIG_DIR", Value: "/var/qwenpaw-cfg"},
+							{Name: "QWENPAW_SECRET_DIR", Value: "/var/qwenpaw-cfg/secret"},
+						},
 						Ports:           []corev1.ContainerPort{{ContainerPort: agentPort, Name: "agent"}},
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: &allowPrivilegeEscalation,
@@ -211,7 +223,10 @@ func (b *Backend) buildStatefulSet(userID string, replicas int32) *appsv1.Statef
 								Drop: []corev1.Capability{"ALL"},
 							},
 						},
-						VolumeMounts: []corev1.VolumeMount{{Name: "workspace", MountPath: workspaceMount}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "workspace", MountPath: workspaceMount},
+							{Name: "qwenpaw-cfg", MountPath: "/var/qwenpaw-cfg"},
+						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{Path: "/health", Port: intstr.FromInt(agentPort)},

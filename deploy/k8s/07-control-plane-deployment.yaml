@@ -1,0 +1,42 @@
+# 控制面 Deployment：跑在 cloude-control 命名空间，通过 Pod DNS 编排数据面。
+# 使用 05-rbac.yaml 的 control-plane ServiceAccount（最小权限）。
+# 端口 8080 仅为集群内访问；外部统一用 kubectl port-forward 或 Ingress。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: cloude-control
+  labels:
+    app: cloude-agent
+    role: control-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloude-agent
+      role: control-plane
+  template:
+    metadata:
+      labels:
+        app: cloude-agent
+        role: control-plane
+    spec:
+      serviceAccountName: control-plane
+      containers:
+        - name: control-plane
+          image: cloude-control:local
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen=:8080
+            - --namespace=cloude-agent
+            - --agent-image=cloude-agent:local
+            - --admin-token=dev-admin-token
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
