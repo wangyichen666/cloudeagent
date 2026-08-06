@@ -365,10 +365,11 @@ function AgentPanel(props: {
       </div>
 
       <div className="models">
-        <button onClick={loadModels}>{showModels ? '刷新' : '模型配置'}</button>
+        <button onClick={loadModels}>{showModels ? '刷新配置' : '模型配置'}</button>
         {models && (
           <span className="muted">
             当前模型：{models.model} @ {models.provider}
+            {models.api_key ? ` · 密钥已保存 ${models.api_key}` : ' · 未配置密钥'}
           </span>
         )}
         {showModels && (
@@ -384,6 +385,9 @@ function AgentPanel(props: {
               value={modelForm.api_key}
               onChange={(e) => setModelForm({ ...modelForm, api_key: e.target.value })}
             />
+            {models?.api_key && (
+              <span className="muted hint">已保存 {models.api_key}，留空则不修改</span>
+            )}
             <input
               placeholder="model，如 qwen3-max"
               value={modelForm.model}

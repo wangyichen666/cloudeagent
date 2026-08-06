@@ -248,6 +248,11 @@ button.danger {
   align-items: center;
 }
 
+.model-form .hint {
+  grid-column: 1 / -1;
+  font-size: 12px;
+}
+
 .chat {
   flex: 1;
   display: flex;
