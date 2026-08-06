@@ -175,11 +175,12 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 	var mock bool
 	if ready, reason := s.AcpReady(); ready {
 		var sb strings.Builder
+		filter := newHeadlineLineFilter(func(text string) { _, _ = sb.WriteString(text) })
 		handler := UpdateHandlerFunc(func(u map[string]any) {
 			if kind, _ := u["sessionUpdate"].(string); kind == acpUpdateKindMessage {
 				if c, ok := u["content"].(map[string]any); ok {
 					if text, ok := c["text"].(string); ok {
-						sb.WriteString(text)
+						filter.Write(text)
 					}
 				}
 			}
@@ -192,7 +193,8 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 			_, _ = s.appendLog("error", err.Error(), cfg.Model)
 			return nil, err
 		}
-		reply = strings.TrimSpace(sb.String())
+		filter.Flush()
+		reply = stripHeadlineText(sb.String())
 		if reply == "" {
 			reply = "（QwenPaw 未产生文本回复，请查看工具调用/工作区状态）"
 		}
@@ -237,14 +239,19 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 	var mock bool
 	if ready, _ := s.AcpReady(); ready {
 		var sb strings.Builder
+		filter := newHeadlineLineFilter(func(text string) {
+			sb.WriteString(text)
+			if strings.TrimSpace(text) != "" {
+				_ = emit("delta", map[string]any{"text": text})
+			}
+		})
 		handler := UpdateHandlerFunc(func(u map[string]any) {
 			kind, _ := u["sessionUpdate"].(string)
 			switch kind {
 			case acpUpdateKindMessage:
 				if c, ok := u["content"].(map[string]any); ok {
 					if text, ok := c["text"].(string); ok && text != "" {
-						sb.WriteString(text)
-						_ = emit("delta", map[string]any{"text": text})
+						filter.Write(text)
 					}
 				}
 			case acpUpdateKindThought:
@@ -268,7 +275,8 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 			_, _ = s.appendLog("error", err.Error(), cfg.Model)
 			return nil, err
 		}
-		reply = strings.TrimSpace(sb.String())
+		filter.Flush()
+		reply = stripHeadlineText(sb.String())
 	} else {
 		llm := NewLLM(cfg)
 		reply, err = llm.Complete(ctx, cfg, req.Message)
