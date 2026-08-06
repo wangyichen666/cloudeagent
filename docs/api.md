@@ -23,9 +23,11 @@ Base URL：`http://127.0.0.1:8080`（默认端口，可用 `--listen` 修改）
 | `POST` | `/v1/users/{id}/wake` | 唤醒（重新注入模型配置） | Admin |
 | `POST` | `/v1/users/{id}/models` | 热切换模型 `{"base_url","api_key","model","provider"}` | Admin |
 | `GET` | `/v1/users/{id}/models` | 当前模型配置（api_key 掩码） | Admin |
+| `GET` | `/v1/users/{id}/connect` | **前端连接 Agent**：确保运行，返回内核状态、实例 token 与控制面 WS 地址 | Admin |
 | `POST` | `/v1/users/{id}/chat` | 同步对话 `{"message":"..."}` | Admin / 实例 token |
 | `GET` | `/v1/users/{id}/session` | WebSocket 流式会话（需 `?token=`） | 实例 token |
 | `GET` | `/v1/users/{id}/workspace` | 工作区文件与会话历史摘要 | Admin |
+| `GET` | `/v1/users/{id}/history` | **对话历史**（工作区持久化，`?limit=N` 可选） | Admin / 实例 token |
 | `POST` | `/v1/users/{id}/reviews` | 提交异步评审 `{"repo":"<路径>","pr_number":42}` | Admin |
 | `GET` | `/v1/users/{id}/reviews` | 评审列表 | Admin |
 | `GET` | `/v1/users/{id}/reviews/{review_id}` | 评审详情（含 findings） | Admin |
@@ -38,6 +40,36 @@ Base URL：`http://127.0.0.1:8080`（默认端口，可用 `--listen` 修改）
 ```
 
 常见状态码：`401` 鉴权失败、`404` 实例不存在、`409` 状态冲突（如对已休眠实例对话，需先 wake）、`500` 内部错误。
+
+## 前端对接四接口
+
+给前端使用的四个核心接口（均已支持 CORS，Vite 开发代理同源即可）：
+
+```bash
+CP=http://127.0.0.1:18080
+AUTH="Authorization: Bearer dev-admin-token"
+
+# 1. 创建 Agent（Pod 内置 QwenPaw 内核）
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"id":"u-1001"}' "$CP/v1/users"
+
+# 2. 连接 Agent：返回 ws_url（经控制面转发）+ 实例 token + 内核状态
+curl -H "$AUTH" "$CP/v1/users/u-1001/connect"
+# => {"status":"running","kernel":{...},"token":"...","ws_url":"ws://.../v1/users/u-1001/session?token=..."}
+
+# 3. 与 Pod 中的 Agent 对话（WebSocket 流式，前端推荐）
+#    ws_url 即上一步返回的地址；消息协议 {"type":"chat","message":"..."}
+#    （REST 同步对话可用 POST /v1/users/{id}/chat）
+
+# 4. 读取保存的对话历史
+curl -H "$AUTH" "$CP/v1/users/u-1001/history?limit=50"
+```
+
+对话历史由 agent-runtime 自动持久化到工作区 `.agent/conversation.jsonl`
+（K8s 路径为 PVC），休眠/唤醒、内核重启后不丢失。
+
+前端项目见 [`web/`](../web/)（Vite + React + TypeScript）：`npm run dev` 后访问
+http://localhost:5173，开发代理把 `/v1` 转发到控制面。
 
 ## WebSocket 协议（/v1/users/{id}/session）
 

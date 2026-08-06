@@ -125,6 +125,26 @@ docker compose up -d postgres redis
   --redis-addr 127.0.0.1:6379
 ```
 
+## 前端控制台（web/）
+
+`web/` 是一个 Vite + React + TypeScript 前端，对接四个核心接口：**创建 Agent、
+连接 Agent（WebSocket 流式对话）、读取持久化对话历史**，以及模型热切换、
+休眠/唤醒/删除。
+
+```bash
+cd web
+npm install
+npm run dev        # http://localhost:5173
+```
+
+开发代理把 `/v1` 转发到 `http://127.0.0.1:18080`（可用环境变量 `VITE_API_BASE`
+覆盖）。控制面在 kind 集群内时，先 `kubectl port-forward -n cloude-control
+svc/control-plane-svc 18080:8080` 再启动前端。
+
+登录后填入管理 Token（默认 `dev-admin-token`）即可创建/连接 Agent；前端通过
+`GET /v1/users/{id}/connect` 获取实例 token 与**经控制面转发**的 WebSocket 地址，
+浏览器无需直连 Pod。
+
 ## API 速览（完整见 [docs/api.md](docs/api.md)）
 
 所有管理面请求带 `Authorization: Bearer <admin-token>`；会话级请求可用每个用户派生的实例 token。

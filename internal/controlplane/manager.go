@@ -298,6 +298,54 @@ func (m *Manager) Workspace(ctx context.Context, userID string) (map[string]any,
 	return out, nil
 }
 
+// History 代理读取实例的持久化对话历史（.agent/conversation.jsonl）。
+func (m *Manager) History(ctx context.Context, userID string, limit int) (map[string]any, error) {
+	inst, err := m.ensureRunning(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	u := inst.Endpoint + "/v1/history"
+	if limit > 0 {
+		u += fmt.Sprintf("?limit=%d", limit)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Connect 返回前端「连接 Agent」所需信息：确保实例运行、拉取内核状态。
+// 实例 token 与 WebSocket 地址由 Server 层签发（Authenticator 持有命名空间）。
+func (m *Manager) Connect(ctx context.Context, userID string) (map[string]any, error) {
+	inst, err := m.ensureRunning(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	kernel := map[string]any{}
+	if resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(inst.Endpoint + "/health"); err == nil {
+		defer resp.Body.Close()
+		var health map[string]any
+		if json.NewDecoder(resp.Body).Decode(&health) == nil {
+			if k, ok := health["kernel"].(map[string]any); ok {
+				kernel = k
+			}
+		}
+	}
+	return map[string]any{
+		"user_id":   userID,
+		"status":    inst.Status,
+		"endpoint":  inst.Endpoint,
+		"workspace": inst.Workspace,
+		"kernel":    kernel,
+	}, nil
+}
+
 // TouchActivity 更新活跃度（供 idle reaper 判定）。
 func (m *Manager) TouchActivity(ctx context.Context, userID string) error {
 	return m.store.TouchActivity(ctx, userID)

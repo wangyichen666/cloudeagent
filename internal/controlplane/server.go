@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,10 +57,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/users/{id}/chat", s.authorizeInstance(s.handleChat))
 	mux.HandleFunc("GET /v1/users/{id}/session", s.handleSessionWS)
 	mux.HandleFunc("GET /v1/users/{id}/workspace", s.requireAdmin(s.handleWorkspace))
+	mux.HandleFunc("GET /v1/users/{id}/connect", s.requireAdmin(s.handleConnect))
+	mux.HandleFunc("GET /v1/users/{id}/history", s.authorizeInstance(s.handleHistory))
 	mux.HandleFunc("POST /v1/users/{id}/reviews", s.requireAdmin(s.handleCreateReview))
 	mux.HandleFunc("GET /v1/users/{id}/reviews", s.requireAdmin(s.handleListReviews))
 	mux.HandleFunc("GET /v1/users/{id}/reviews/{review_id}", s.requireAdmin(s.handleGetReview))
-	return mux
+	// 前端（Vite dev / 静态托管）跨域访问：放开 CORS 便于对接。
+	return s.cors(mux)
+}
+
+// cors 为 /v1 API 添加跨域头（本地演示默认全放开；生产可收敛到白名单）。
+func (s *Server) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "600")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -221,6 +240,43 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 	out, err := s.cfg.Manager.Workspace(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusConflict, "workspace_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleConnect 返回前端连接 Agent 所需信息：实例状态、内核、实例 token 与 WS 地址。
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	info, err := s.cfg.Manager.Connect(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "connect_failed", err.Error())
+		return
+	}
+	token := s.cfg.Auth.DerivedToken(userID)
+	// WebSocket 必须经控制面转发（浏览器只能到控制面，Pod 内部地址不可达）。
+	// 基于请求 Host 构造，浏览器即可原路回连（支持端口转发/反向代理）。
+	scheme := "ws"
+	if r.TLS != nil {
+		scheme = "wss"
+	}
+	wsURL := scheme + "://" + r.Host + "/v1/users/" + userID + "/session?token=" + token
+	info["token"] = token
+	info["ws_url"] = wsURL
+	writeJSON(w, http.StatusOK, info)
+}
+
+// handleHistory 读取实例的持久化对话历史（保存于工作区，休眠/唤醒不丢）。
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	out, err := s.cfg.Manager.History(r.Context(), r.PathValue("id"), limit)
+	if err != nil {
+		writeError(w, http.StatusConflict, "history_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

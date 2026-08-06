@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -46,6 +47,7 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/config", d.handleSetConfig)
 	mux.HandleFunc("POST /v1/chat", d.handleChat)
 	mux.HandleFunc("GET /v1/workspace", d.handleWorkspace)
+	mux.HandleFunc("GET /v1/history", d.handleHistory)
 	mux.HandleFunc("GET /v1/session", d.handleSessionWS)
 	return mux
 }
@@ -126,6 +128,27 @@ func (d *Daemon) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 		"files":     files,
 		"recent":    history,
 		"kernel":    d.session.KernelStatus(),
+	})
+}
+
+// handleHistory 返回持久化的对话历史（保存于工作区 .agent/conversation.jsonl，
+// 休眠/唤醒不丢失）。limit 默认 100，0 表示全部。
+func (d *Daemon) handleHistory(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			limit = n
+		}
+	}
+	entries, err := d.session.History(limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages": entries,
+		"total":    len(entries),
+		"path":     d.session.LogPath(),
 	})
 }
 
