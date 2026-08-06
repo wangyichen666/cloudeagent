@@ -154,6 +154,7 @@ function AgentPanel(props: {
   const [modelForm, setModelForm] = useState({ base_url: '', api_key: '', model: '', provider: '' })
   const [showModels, setShowModels] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sessionId, setSessionId] = useState('')
   const [input, setInput] = useState('')
   const [wsOpen, setWsOpen] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
@@ -164,7 +165,8 @@ function AgentPanel(props: {
       const info = await api.connect(adminToken, agent.user_id)
       setConnectInfo(info)
       setKernel(info.kernel)
-      const hist = await api.history(adminToken, agent.user_id)
+      setSessionId((prev) => info.session_id || prev)
+      const hist = await api.history(adminToken, agent.user_id, 200, info.session_id || sessionId)
       setMessages(
         hist.messages.map((m, i) => ({
           id: m.index || i,
@@ -178,7 +180,7 @@ function AgentPanel(props: {
     } catch (e) {
       onError((e as Error).message)
     }
-  }, [adminToken, agent.user_id, onError])
+  }, [adminToken, agent.user_id, sessionId, onError])
 
   useEffect(() => {
     void loadDetail()
@@ -282,8 +284,16 @@ function AgentPanel(props: {
       ...prev,
       { id: Date.now(), role: 'user', content: text, ts: new Date().toISOString() },
     ])
-    wsRef.current.send(JSON.stringify({ type: 'chat', message: text }))
+    wsRef.current.send(JSON.stringify({ type: 'chat', message: text, session_id: sessionId }))
     setInput('')
+  }
+
+  const createNewSession = async () => {
+    await onAct('new-session', async () => {
+      const res = await api.newSession(adminToken, agent.user_id)
+      setSessionId(res.session_id)
+      setMessages([])
+    })
   }
 
   const loadModels = async () => {
@@ -326,6 +336,7 @@ function AgentPanel(props: {
       const info = await api.connect(adminToken, agent.user_id)
       setConnectInfo(info)
       setKernel(info.kernel)
+      setSessionId((prev) => info.session_id || prev)
     })
   }
 
@@ -340,6 +351,9 @@ function AgentPanel(props: {
         <div className="actions">
           <button onClick={doConnect} disabled={busy === 'connect'}>
             {busy === 'connect' ? '连接中…' : '连接 Agent'}
+          </button>
+          <button onClick={createNewSession} disabled={busy === 'new-session'}>
+            {busy === 'new-session' ? '新建中…' : '新建会话'}
           </button>
           <button
             disabled={agent.status !== 'suspended' || busy === 'wake'}

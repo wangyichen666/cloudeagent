@@ -26,6 +26,7 @@ export interface ConnectInfo {
   endpoint: string
   workspace: string
   kernel: KernelInfo
+  session_id?: string
   token: string
   ws_url: string
 }

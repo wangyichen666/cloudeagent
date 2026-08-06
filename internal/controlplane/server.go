@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/users/{id}/session", s.handleSessionWS)
 	mux.HandleFunc("GET /v1/users/{id}/workspace", s.requireAdmin(s.handleWorkspace))
 	mux.HandleFunc("GET /v1/users/{id}/connect", s.requireAdmin(s.handleConnect))
+	mux.HandleFunc("POST /v1/users/{id}/sessions", s.authorizeInstance(s.handleNewSession))
 	mux.HandleFunc("GET /v1/users/{id}/history", s.authorizeInstance(s.handleHistory))
 	mux.HandleFunc("POST /v1/users/{id}/reviews", s.requireAdmin(s.handleCreateReview))
 	mux.HandleFunc("GET /v1/users/{id}/reviews", s.requireAdmin(s.handleListReviews))
@@ -274,11 +275,22 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	out, err := s.cfg.Manager.History(r.Context(), r.PathValue("id"), limit)
+	out, err := s.cfg.Manager.History(r.Context(), r.PathValue("id"), limit, r.URL.Query().Get("session_id"))
 	if err != nil {
 		writeError(w, http.StatusConflict, "history_failed", err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleNewSession 让 Pod 内的 QwenPaw 真实开启一个新会话。
+func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
+	out, err := s.cfg.Manager.NewSession(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusConflict, "new_session_failed", err.Error())
+		return
+	}
+	out["user_id"] = r.PathValue("id")
 	writeJSON(w, http.StatusOK, out)
 }
 

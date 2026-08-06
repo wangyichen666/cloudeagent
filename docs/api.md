@@ -24,10 +24,11 @@ Base URL：`http://127.0.0.1:8080`（默认端口，可用 `--listen` 修改）
 | `POST` | `/v1/users/{id}/models` | 热切换模型 `{"base_url","api_key","model","provider"}` | Admin |
 | `GET` | `/v1/users/{id}/models` | 当前模型配置（api_key 掩码） | Admin |
 | `GET` | `/v1/users/{id}/connect` | **前端连接 Agent**：确保运行，返回内核状态、实例 token 与控制面 WS 地址 | Admin |
+| `POST` | `/v1/users/{id}/sessions` | **新建会话**：让 Pod 内 QwenPaw 真实执行 `session/new`（关闭旧会话，开启全新上下文） | Admin / 实例 token |
 | `POST` | `/v1/users/{id}/chat` | 同步对话 `{"message":"..."}` | Admin / 实例 token |
 | `GET` | `/v1/users/{id}/session` | WebSocket 流式会话（需 `?token=`） | 实例 token |
 | `GET` | `/v1/users/{id}/workspace` | 工作区文件与会话历史摘要 | Admin |
-| `GET` | `/v1/users/{id}/history` | **对话历史**（工作区持久化，`?limit=N` 可选） | Admin / 实例 token |
+| `GET` | `/v1/users/{id}/history` | **对话历史**（工作区持久化，`?limit=N`、`?session_id=` 可选） | Admin / 实例 token |
 | `POST` | `/v1/users/{id}/reviews` | 提交异步评审 `{"repo":"<路径>","pr_number":42}` | Admin |
 | `GET` | `/v1/users/{id}/reviews` | 评审列表 | Admin |
 | `GET` | `/v1/users/{id}/reviews/{review_id}` | 评审详情（含 findings） | Admin |
@@ -55,14 +56,18 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 
 # 2. 连接 Agent：返回 ws_url（经控制面转发）+ 实例 token + 内核状态
 curl -H "$AUTH" "$CP/v1/users/u-1001/connect"
-# => {"status":"running","kernel":{...},"token":"...","ws_url":"ws://.../v1/users/u-1001/session?token=..."}
+# => {"status":"running","kernel":{...},"session_id":"default","token":"...","ws_url":"ws://.../v1/users/u-1001/session?token=..."}
+
+# 2.5 新建会话（QwenPaw 真实开启新上下文）
+curl -X POST -H "$AUTH" "$CP/v1/users/u-1001/sessions"
+# => {"ok":true,"session_id":"s-1786..."}，之后对话带 session_id 即进入新会话
 
 # 3. 与 Pod 中的 Agent 对话（WebSocket 流式，前端推荐）
-#    ws_url 即上一步返回的地址；消息协议 {"type":"chat","message":"..."}
+#    ws_url 即上一步返回的地址；消息协议 {"type":"chat","message":"...","session_id":"..."}
 #    （REST 同步对话可用 POST /v1/users/{id}/chat）
 
 # 4. 读取保存的对话历史
-curl -H "$AUTH" "$CP/v1/users/u-1001/history?limit=50"
+curl -H "$AUTH" "$CP/v1/users/u-1001/history?limit=50&session_id=s-1786..."
 ```
 
 对话历史由 agent-runtime 自动持久化到工作区 `.agent/conversation.jsonl`

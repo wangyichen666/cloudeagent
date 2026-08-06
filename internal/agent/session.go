@@ -25,6 +25,7 @@ type Session struct {
 	acpBin    string
 	mu        sync.Mutex
 	promptMu  sync.Mutex // 单用户实例：串行化 prompt，避免同一会话交错
+	activeSess string     // 当前 ACP 会话 key（新建会话后更新）
 
 	probeOnce sync.Once
 	probeVer  string
@@ -43,6 +44,7 @@ func NewSession(workspace string, cfg *ConfigManager, acpBin string) (*Session, 
 		cfg:       cfg,
 		acpBin:    acpBin,
 		acp:       NewACPServer(acpBin, workspace, cfg),
+		activeSess: "default",
 	}, nil
 }
 
@@ -135,18 +137,19 @@ func (s *Session) MessageIndex() (int, error) {
 	return strings.Count(string(data), "\n"), nil
 }
 
-func (s *Session) appendLog(role, content, model string) (int, error) {
+func (s *Session) appendLog(role, content, model, sessionID string) (int, error) {
 	idx, err := s.MessageIndex()
 	if err != nil {
 		return 0, err
 	}
 	idx++
 	entry := map[string]any{
-		"ts":      time.Now().UTC().Format(time.RFC3339),
-		"role":    role,
-		"content": content,
-		"model":   model,
-		"index":   idx,
+		"ts":         time.Now().UTC().Format(time.RFC3339),
+		"role":       role,
+		"content":    content,
+		"model":      model,
+		"index":      idx,
+		"session_id": sessionID,
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -166,7 +169,8 @@ func (s *Session) appendLog(role, content, model string) (int, error) {
 // Chat 同步执行一次会话请求（控制面 REST 路径）。
 func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatResponse, error) {
 	cfg := s.cfg.Get()
-	idx, err := s.appendLog("user", req.Message, cfg.Model)
+	key := s.sessionKey(req.SessionID)
+	idx, err := s.appendLog("user", req.Message, cfg.Model, key)
 	if err != nil {
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
@@ -185,12 +189,11 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 				}
 			}
 		})
-		key := s.acpSessionKey(req.SessionID)
 		s.promptMu.Lock()
 		_, err = s.acp.Prompt(ctx, key, req.Message, handler)
 		s.promptMu.Unlock()
 		if err != nil {
-			_, _ = s.appendLog("error", err.Error(), cfg.Model)
+			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
 			return nil, err
 		}
 		filter.Flush()
@@ -206,12 +209,12 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 		llm := NewLLM(cfg)
 		reply, err = llm.Complete(ctx, cfg, req.Message)
 		if err != nil {
-			_, _ = s.appendLog("error", err.Error(), cfg.Model)
+			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
 			return nil, err
 		}
 		mock = llm.Name() == "mock"
 	}
-	_, _ = s.appendLog("assistant", reply, cfg.Model)
+	_, _ = s.appendLog("assistant", reply, cfg.Model, key)
 	return &models.ChatResponse{
 		Reply:        reply,
 		Model:        cfg.Model,
@@ -230,7 +233,8 @@ type StreamEmitter func(kind string, payload map[string]any) error
 // 真实内核：ACP session/update 增量转发；mock：分片模拟流式。
 func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamEmitter) (*models.ChatResponse, error) {
 	cfg := s.cfg.Get()
-	idx, err := s.appendLog("user", req.Message, cfg.Model)
+	key := s.sessionKey(req.SessionID)
+	idx, err := s.appendLog("user", req.Message, cfg.Model, key)
 	if err != nil {
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
@@ -266,13 +270,12 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 				_ = emit("usage", u)
 			}
 		})
-		key := s.acpSessionKey(req.SessionID)
 		s.promptMu.Lock()
 		_, err = s.acp.Prompt(ctx, key, req.Message, handler)
 		s.promptMu.Unlock()
 		if err != nil {
 			_ = emit("error", map[string]any{"message": err.Error()})
-			_, _ = s.appendLog("error", err.Error(), cfg.Model)
+			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
 			return nil, err
 		}
 		filter.Flush()
@@ -282,7 +285,7 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 		reply, err = llm.Complete(ctx, cfg, req.Message)
 		if err != nil {
 			_ = emit("error", map[string]any{"message": err.Error()})
-			_, _ = s.appendLog("error", err.Error(), cfg.Model)
+			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
 			return nil, err
 		}
 		mock = llm.Name() == "mock"
@@ -293,7 +296,7 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 		}
 	}
 
-	_, _ = s.appendLog("assistant", reply, cfg.Model)
+	_, _ = s.appendLog("assistant", reply, cfg.Model, key)
 	return &models.ChatResponse{
 		Reply:        reply,
 		Model:        cfg.Model,
@@ -332,11 +335,40 @@ func (s *Session) KernelStatus() map[string]any {
 	}
 }
 
-func (s *Session) acpSessionKey(hint string) string {
+// sessionKey 返回本次请求使用的 ACP 会话 key：
+// 客户端显式传入则用传入值，否则用当前活动会话（新建会话后即新上下文）。
+func (s *Session) sessionKey(hint string) string {
 	if hint != "" {
 		return hint
 	}
-	return "default"
+	return s.activeSess
+}
+
+// ActiveSession 返回当前活动会话 id（前端用于标识/展示）。
+func (s *Session) ActiveSession() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeSess
+}
+
+// NewSession 让 QwenPaw 真正开启一个新会话：
+// 关闭旧 ACP 会话（释放 qwenpaw 内存上下文），创建全新 session/new，
+// 并切换为活动会话。返回新会话 id。
+func (s *Session) NewSession(ctx context.Context) (string, error) {
+	key := fmt.Sprintf("s-%d", time.Now().UnixNano())
+	s.mu.Lock()
+	old := s.activeSess
+	s.activeSess = key
+	s.mu.Unlock()
+
+	if old != "" && old != key {
+		s.acp.CloseSessionLocal(old)
+	}
+	// 主动创建 ACP 会话（session/new），确保 qwenpaw 侧上下文真实就绪。
+	if _, err := s.acp.SessionID(ctx, key); err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func (s *Session) sessionID(hint string) string {
@@ -346,8 +378,9 @@ func (s *Session) sessionID(hint string) string {
 	return fmt.Sprintf("local-%d", time.Now().UnixNano())
 }
 
-// History 返回最近 N 条会话记录（供 GET /v1/workspace 与可观测使用）。
-func (s *Session) History(n int) ([]map[string]any, error) {
+// History 返回最近 N 条会话记录；sessionID 非空时只返回该会话的记录
+// （供前端按会话展示，也用于 GET /v1/workspace 与可观测）。
+func (s *Session) History(n int, sessionID string) ([]map[string]any, error) {
 	data, err := os.ReadFile(s.LogPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -358,6 +391,16 @@ func (s *Session) History(n int) ([]map[string]any, error) {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
 		return nil, nil
+	}
+	if sessionID != "" {
+		filtered := lines[:0]
+		for _, line := range lines {
+			var entry map[string]any
+			if json.Unmarshal([]byte(line), &entry) == nil && entry["session_id"] == sessionID {
+				filtered = append(filtered, line)
+			}
+		}
+		lines = filtered
 	}
 	if n > 0 && len(lines) > n {
 		lines = lines[len(lines)-n:]

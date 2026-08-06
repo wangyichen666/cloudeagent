@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -299,7 +301,8 @@ func (m *Manager) Workspace(ctx context.Context, userID string) (map[string]any,
 }
 
 // History 代理读取实例的持久化对话历史（.agent/conversation.jsonl）。
-func (m *Manager) History(ctx context.Context, userID string, limit int) (map[string]any, error) {
+// sessionID 非空时只返回该会话的记录。
+func (m *Manager) History(ctx context.Context, userID string, limit int, sessionID string) (map[string]any, error) {
 	inst, err := m.ensureRunning(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -308,11 +311,45 @@ func (m *Manager) History(ctx context.Context, userID string, limit int) (map[st
 	if limit > 0 {
 		u += fmt.Sprintf("?limit=%d", limit)
 	}
+	if sessionID != "" {
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		u += sep + "session_id=" + url.QueryEscape(sessionID)
+	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// NewSession 让 Pod 内的 QwenPaw 真实开启一个新会话。
+func (m *Manager) NewSession(ctx context.Context, userID string) (map[string]any, error) {
+	inst, err := m.ensureRunning(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	body, _ := json.Marshal(map[string]any{})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, inst.Endpoint+"/v1/session/new", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("agent session/new status %d", resp.StatusCode)
+	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
@@ -337,12 +374,21 @@ func (m *Manager) Connect(ctx context.Context, userID string) (map[string]any, e
 			}
 		}
 	}
+	sessionID := ""
+	if resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(inst.Endpoint + "/v1/session/info"); err == nil {
+		defer resp.Body.Close()
+		var info map[string]any
+		if json.NewDecoder(resp.Body).Decode(&info) == nil {
+			sessionID, _ = info["session_id"].(string)
+		}
+	}
 	return map[string]any{
 		"user_id":   userID,
 		"status":    inst.Status,
 		"endpoint":  inst.Endpoint,
 		"workspace": inst.Workspace,
 		"kernel":    kernel,
+		"session_id": sessionID,
 	}, nil
 }
 

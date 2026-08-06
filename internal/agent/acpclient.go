@@ -740,6 +740,17 @@ func (a *ACPServer) CloseSession(sid string) {
 	a.mu.Unlock()
 }
 
+// CloseSessionLocal 按本地会话 key 关闭对应的 ACP 会话（best-effort）。
+func (a *ACPServer) CloseSessionLocal(localKey string) {
+	a.mu.Lock()
+	sid := a.sessions[localKey]
+	a.mu.Unlock()
+	if sid == "" {
+		return
+	}
+	a.CloseSession(sid)
+}
+
 // SyncConfig 在模型配置变化后调用：若 ACP 已运行且配置与启动时不同，
 // 则重启子进程注入新凭证（凭证不落盘的体现）。
 func (a *ACPServer) SyncConfig(ctx context.Context) {

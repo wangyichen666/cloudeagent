@@ -48,6 +48,8 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat", d.handleChat)
 	mux.HandleFunc("GET /v1/workspace", d.handleWorkspace)
 	mux.HandleFunc("GET /v1/history", d.handleHistory)
+	mux.HandleFunc("POST /v1/session/new", d.handleNewSession)
+	mux.HandleFunc("GET /v1/session/info", d.handleGetSession)
 	mux.HandleFunc("GET /v1/session", d.handleSessionWS)
 	return mux
 }
@@ -122,7 +124,7 @@ func (d *Daemon) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 			"bytes": info.Size(),
 		})
 	}
-	history, _ := d.session.History(3)
+	history, _ := d.session.History(3, "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace": d.session.Workspace(),
 		"files":     files,
@@ -140,7 +142,7 @@ func (d *Daemon) handleHistory(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	entries, err := d.session.History(limit)
+	entries, err := d.session.History(limit, r.URL.Query().Get("session_id"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -149,6 +151,26 @@ func (d *Daemon) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"messages": entries,
 		"total":    len(entries),
 		"path":     d.session.LogPath(),
+	})
+}
+
+// handleNewSession 让 QwenPaw 真实开启一个新会话（session/new + 关闭旧会话）。
+func (d *Daemon) handleNewSession(w http.ResponseWriter, r *http.Request) {
+	sessionID, err := d.session.NewSession(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"session_id": sessionID,
+	})
+}
+
+// handleGetSession 返回当前活动会话（前端展示/续接用）。
+func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": d.session.ActiveSession(),
 	})
 }
 

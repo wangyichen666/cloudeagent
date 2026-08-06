@@ -39,13 +39,15 @@ export const api = {
   suspend: (token: string, id: string) => request<AgentInstance>('POST', `/v1/users/${id}/suspend`, token),
   wake: (token: string, id: string) => request<AgentInstance>('POST', `/v1/users/${id}/wake`, token),
   connect: (token: string, id: string) => request<ConnectInfo>('GET', `/v1/users/${id}/connect`, token),
+  newSession: (token: string, id: string) =>
+    request<{ ok: boolean; session_id: string }>('POST', `/v1/users/${id}/sessions`, token),
   getModels: (token: string, id: string) => request<ModelConfig>('GET', `/v1/users/${id}/models`, token),
   setModels: (token: string, id: string, cfg: ModelConfig) =>
     request<{ ok: boolean; model: string }>('POST', `/v1/users/${id}/models`, token, cfg),
-  history: (token: string, id: string, limit = 200) =>
+  history: (token: string, id: string, limit = 200, sessionId?: string) =>
     request<{ messages: HistoryMessage[]; total: number; path: string }>(
       'GET',
-      `/v1/users/${id}/history?limit=${limit}`,
+      `/v1/users/${id}/history?limit=${limit}${sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ''}`,
       token,
     ),
   chat: (token: string, id: string, message: string) =>
