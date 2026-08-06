@@ -1,0 +1,10 @@
+# 控制面与数据面分属不同命名空间（文档「七、安全隔离」：命名空间隔离）
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloude-agent
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloude-control

@@ -1,0 +1,72 @@
+# 每用户一个 StatefulSet（由控制面 k8sbackend 动态生成，此为示例）。
+# 休眠 = replicas:0，唤醒 = replicas:1，PVC 保留 => 数据无缝恢复。
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agent-u-1001
+  namespace: cloude-agent
+  labels:
+    app: cloude-agent
+    role: data-plane
+    user-id: u-1001
+spec:
+  serviceName: agent-svc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloude-agent
+      role: data-plane
+      user-id: u-1001
+  template:
+    metadata:
+      labels:
+        app: cloude-agent
+        role: data-plane
+        user-id: u-1001
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: agent
+          image: cloude-agent:local
+          args: ["--listen", "0.0.0.0:18585", "--workspace", "/workspace"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 18585
+              name: agent
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 18585
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 18585
+            initialDelaySeconds: 10
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+        labels:
+          app: cloude-agent
+          role: data-plane
+          user-id: u-1001
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+        # storageClassName: longhorn   # 生产用 Longhorn / local-path

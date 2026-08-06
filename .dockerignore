@@ -1,0 +1,9 @@
+.git
+bin
+data
+*.log
+docs
+deploy
+migrations
+scripts
+k8sbackend

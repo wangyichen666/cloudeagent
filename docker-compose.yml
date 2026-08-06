@@ -1,0 +1,38 @@
+# 本地开发栈（可选）：状态面 PostgreSQL + 热状态 Redis。
+# 不启动即用内存存储 + 零依赖进程后端跑通全流程；需要验证「生产语义」时再启用：
+#   docker compose up -d
+#   ./bin/control-plane --store postgres --dsn "postgres://cloude:cloude@127.0.0.1:5432/cloude?sslmode=disable" \
+#       --redis-addr 127.0.0.1:6379 --backend process
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cloude
+      POSTGRES_PASSWORD: cloude
+      POSTGRES_DB: cloude
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloude"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

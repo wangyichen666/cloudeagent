@@ -1,0 +1,57 @@
+# 文档「七、安全隔离」：默认拒绝，只放行 控制面 -> 数据面 与出站 DNS/模型 API。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: cloude-agent
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane
+  namespace: cloude-agent
+spec:
+  podSelector:
+    matchLabels:
+      role: data-plane
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: cloude-control
+      ports:
+        - protocol: TCP
+          port: 18585
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controlled-egress
+  namespace: cloude-agent
+spec:
+  podSelector:
+    matchLabels:
+      role: data-plane
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 按需放行模型 API 出口（可指向可控代理做审计）
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.0.0.0/8
+    #   ports:
+    #     - protocol: TCP
+    #       port: 443

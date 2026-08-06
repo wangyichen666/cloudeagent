@@ -1,0 +1,19 @@
+# Headless Service：为每个 StatefulSet Pod 提供稳定 DNS
+# agent-<userID>-0.agent-svc.cloude-agent.svc.cluster.local:18585
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-svc
+  namespace: cloude-agent
+  labels:
+    app: cloude-agent
+    role: data-plane
+spec:
+  clusterIP: None
+  selector:
+    app: cloude-agent
+    role: data-plane
+  ports:
+    - name: agent
+      port: 18585
+      targetPort: 18585
