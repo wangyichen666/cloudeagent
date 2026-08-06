@@ -8,6 +8,7 @@ PORT="${PORT:-18080}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-dev-admin-token}"
 USER_ID="${USER_ID:-u-demo}"
 NAMESPACE="${NAMESPACE:-cloude-agent}"
+QPW_BIN="${QPW_BIN:-}"            # 设置后启用 QwenPaw ACP 真实内核（如 QPW_BIN=/usr/local/bin/qwenpaw）
 DATA_DIR="$(pwd)/data/demo"
 BIN_DIR="$(pwd)/bin"
 CP_PID=""
@@ -81,6 +82,15 @@ echo " CloudeAgent 本地方案演示（进程后端 + mock LLM + 内存存储�
 echo " 控制面: http://127.0.0.1:${PORT}  admin token: ${ADMIN_TOKEN}"
 echo "==============================================================="
 
+KERNEL_MODE="mock LLM（零外部依赖）"
+if [ -n "${QWENPAW_BIN:-}" ] || { [ -n "$QPW_BIN" ] && command -v "$QPW_BIN" >/dev/null 2>&1; }; then
+  QPW_BIN="${QWENPAW_BIN:-$QPW_BIN}"
+  KERNEL_MODE="QwenPaw ACP 内核（$QPW_BIN）"
+  export QWENPAW_BIN="$QPW_BIN"
+fi
+echo " 内核模式: ${KERNEL_MODE}"
+echo "==============================================================="
+
 if ! port_free; then
   echo "端口 ${PORT} 已被占用，请用 PORT=<其他端口> ./scripts/demo.sh" >&2
   exit 1
@@ -107,12 +117,20 @@ echo "  实例派生 token: ${DERIVED:0:16}...（sha256(namespace:userID)，用�
 step "1. 创建用户实例（None -> Running）"
 api POST "/v1/users" "{\"id\":\"${USER_ID}\"}" | jq '{user_id, instance_name, status, endpoint}'
 
+# 真实内核模式：注入模型配置（凭证仅进实例内存，不落盘）
+if [ -n "${QWENPAW_BIN:-}" ] && [ -n "${OPENAI_BASE_URL:-}" ]; then
+  step "1b. 注入真实模型配置（QwenPaw ACP 内核通过 env 消费，凭证不落盘）"
+  api POST "/v1/users/${USER_ID}/models" \
+    "{\"base_url\":\"${OPENAI_BASE_URL}\",\"api_key\":\"${OPENAI_API_KEY}\",\"model\":\"${OPENAI_MODEL}\",\"provider\":\"openai\"}" \
+    | jq '{ok, model}'
+fi
+
 step "2. 通过控制面统一入口对话（前端只连控制面，见文档 5.2 方案 A）"
 api POST "/v1/users/${USER_ID}/chat" '{"message":"你好，介绍一下你自己"}' "Bearer $DERIVED" | jq '{reply, model, message_index, session_id}'
 api POST "/v1/users/${USER_ID}/chat" '{"message":"今天天气如何？"}' "Bearer $DERIVED" | jq '{reply, message_index}'
 
 step "3. 查看实例工作区（会话历史持久化在 .agent/conversation.jsonl）"
-api GET "/v1/users/${USER_ID}/workspace" | jq '{workspace, files: [.files[].name], recent: (.recent | length)}'
+api GET "/v1/users/${USER_ID}/workspace" | jq '{workspace, kernel, files: [.files[].name], recent: (.recent | length)}'
 
 step "4. 休眠实例（Running -> Suspended，工作区保留）"
 api POST "/v1/users/${USER_ID}/suspend" | jq '{status, workspace}'

@@ -10,7 +10,8 @@ flowchart TB
     CP -->|编排/路由/注入| DP[数据面<br/>process 进程 / docker 容器 / StatefulSet Pod]
     CP -->|元数据读写| SP[状态面<br/>memory / PostgreSQL + Redis]
     DP -->|/health /v1/config /v1/chat /v1/session| Agent[agent-runtime]
-    Agent -->|模型调用| LLM[OpenAI 兼容端点 / mock]
+    Agent -->|ACP stdio JSON-RPC| QPW[qwenpaw acp<br/>QwenPaw 2.x Agent 内核]
+    QPW -->|模型调用| LLM[OpenAI 兼容端点 / mock]
 ```
 
 | 文档设计 | 本地实现 | 说明 |
@@ -21,6 +22,42 @@ flowchart TB
 | PVC 持久化工作区 | 目录 / Docker 命名卷 / PVC | 休眠销毁运行时，工作区保留 |
 | 凭证不落盘 | apiKey 仅内存/Redis 缓存（TTL） | 休眠即丢，唤醒重新注入（`Manager.Suspend/Wake`） |
 | 席位服务换模型配置 | `MockSeatService` | 可替换为真实席位/计费服务 |
+| Agent 内核 | 承载编码能力（工具调用/记忆/沙箱） | QwenPaw 2.x 经 ACP 协议接入（`qwenpaw acp`） |
+
+## 1.5 Agent 内核：QwenPaw ACP 接入
+
+`agent-runtime` 是 ACP（Agent Client Protocol v1）**客户端**，把 QwenPaw 2.x
+（`qwenpaw acp`，stdio JSON-RPC server）作为真正的编码内核拉起：
+
+```mermaid
+sequenceDiagram
+    participant AR as agent-runtime (ACP client)
+    participant QP as qwenpaw acp 子进程
+    participant M as OpenAI 兼容模型端点
+    AR->>QP: initialize
+    QP-->>AR: agentInfo/agentCapabilities
+    AR->>QP: session/new（cwd=用户工作区）
+    AR->>QP: session/prompt（流式）
+    QP-->>AR: session/update 通知（消息/思考/工具调用/usage）
+    QP-->>AR: session/request_permission（权限请求）
+    AR-->>QP: 策略响应（默认拒绝，可挂接审批流）
+    QP->>M: 模型调用（工具循环/编码任务）
+    QP-->>AR: PromptResponse(stopReason)
+```
+
+关键设计：
+
+- **凭证不落盘**：子进程以 `--runtime-provider openai-env` 启动，模型配置通过
+  `OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL` 环境变量注入，进程退出即销毁；
+  模型热切换 = 重启子进程注入新凭证（`SyncConfig`），工作区数据不丢。
+- **有状态**：`--workspace` 直接指向用户持久工作区；对话历史另有
+  `.agent/conversation.jsonl` 兜底，休眠/唤醒、内核重启后消息序号连续。
+- **权限策略**：`session/request_permission` 默认拒绝（headless 安全）；
+  可设置 `bypassPermissions`（信任沙箱）或挂接控制面审批流。
+- **自愈**：子进程异常退出后，下一次请求自动重启并重建会话；
+  `session/prompt` 对传输故障重试一次。
+- **回退**：qwenpaw 不可用/版本 <2.0/模型为 mock 时自动回退 mock LLM，
+  零外部依赖仍可演示全链路。
 
 ## 2. 生命周期状态机
 

@@ -17,6 +17,10 @@ type RuntimeConfig struct {
 	Model    string   `json:"model"`
 	Models   []string `json:"models,omitempty"`
 	Provider string   `json:"provider,omitempty"`
+	// ToolGuardMode 控制 QwenPaw Tool Guard：
+	//   "" / "default"        权限请求走策略（默认拒绝，可挂接审批流）
+	//   "bypass"              信任沙箱内完全放行工具调用（慎用）
+	ToolGuardMode string `json:"tool_guard_mode,omitempty"`
 }
 
 // DefaultRuntimeConfig 返回本地骨架配置（占位符 + mock 兜底），

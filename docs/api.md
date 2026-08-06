@@ -51,9 +51,44 @@ Base URL：`http://127.0.0.1:8080`（默认端口，可用 `--listen` 修改）
 
 ```json
 {"type": "delta", "text": "流式片段"}
+{"type": "thought", "text": "QwenPaw 思考片段"}          // ACP agent_thought_chunk
+{"type": "tool_call", "toolCallId": "…", "title": "…", "kind": "…"}  // ACP tool_call / tool_call_update
+{"type": "usage", "used": 120, "size": 8192}              // ACP usage_update
 {"type": "done", "session_id": "...", "message_index": 7, "model": "mock-gpt-4o", "mock": true}
 {"type": "error", "message": "..."}
 ```
+
+真实内核（QwenPaw ACP）下 `delta` 为逐增量推送；`mock:false`。mock 回退时
+`delta` 为本地分片模拟，`mock:true`。
+
+## Agent 内核状态（实例侧）
+
+`GET /v1/users/{id}/workspace` 与 `GET /health` 返回 `kernel` 字段：
+
+```json
+{
+  "kernel": {
+    "name": "qwenpaw-acp",
+    "enabled": true,
+    "reason": "",
+    "connected": true,
+    "agent": "qwenpaw",
+    "version": "2.0.4",
+    "lastRestart": "2026-08-06T21:00:00+08:00"
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `enabled` | 是否具备启用 ACP 内核的条件（qwenpaw >=2.0 且配置了真实模型） |
+| `reason` | 未启用/连接失败的具体原因（如版本过低、mock 配置） |
+| `connected` | qwenpaw acp 子进程是否已 initialize 握手成功 |
+| `agent` / `version` | 内核 initialize 声明的名称与版本 |
+| `lastRestart` | 最近一次子进程启动/重启时间（自愈可观测） |
+
+实例参数 `--qwenpaw-bin`（或环境变量 `QWENPAW_BIN`）指定内核可执行文件，
+默认 `qwenpaw`；不可用或版本过低时自动回退 mock LLM。
 
 ## 完整示例
 

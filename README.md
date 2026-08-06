@@ -11,7 +11,8 @@
 | 数据面 | K8s 每用户一个 StatefulSet Pod | 三选一：本地进程 / Docker 容器 / K8s StatefulSet |
 | 状态面 | PostgreSQL + Redis | 内存（默认，零依赖）/ PostgreSQL + Redis（生产语义） |
 | Agent 运行时 | 承载编码会话的 daemon | `cmd/agent-runtime`：健康检查、会话、配置热重载 |
-| 模型接入 | 席位服务动态注入 baseURL/apiKey | mock LLM 开箱即用；任意 OpenAI 兼容端点可热切换 |
+| Agent 内核 | 真正的编码能力（工具调用/记忆/沙箱） | **QwenPaw 2.x**，经 ACP 协议接入（`qwenpaw acp`） |
+| 模型接入 | 席位服务动态注入 baseURL/apiKey | mock LLM 开箱即用；QwenPaw 经 env 注入凭证，热切换无需重启 |
 
 ```
 ┌────────────────────────────┐
@@ -34,6 +35,8 @@
 │ docker /   │  │ postgres + │
 │ k8s        │  │ redis      │
 └────────────┘  └────────────┘
+数据面每实例内部：
+agent-runtime ──(ACP stdio JSON-RPC)──> qwenpaw acp（QwenPaw 2.x 内核）
 ```
 
 ## 快速开始（零外部依赖，约 30 秒）
@@ -45,6 +48,51 @@
 脚本会自动完成：编译 → 启动控制面 → 创建用户实例 → 对话 → 查看工作区 → 休眠 → 唤醒（消息序号连续，数据不丢）→ 模型热切换 → 异步代码评审 → WebSocket 流式会话 → 删除实例。
 
 没有安装 Go 也没关系：脚本会自动用 Docker 交叉编译出宿主机可运行的二进制（macOS/Linux）。
+
+## QwenPaw ACP 内核接入（真实编码能力）
+
+默认 demo 使用 mock LLM 兜底；要启用真正的 Agent 内核，只需满足两个条件：
+
+1. **安装 QwenPaw 2.x**（ACP 能力需要 `>=2.0`，v1.x 不支持 `--runtime-provider`）：
+
+   ```bash
+   pip install -U qwenpaw
+   qwenpaw --version   # 应输出 2.x
+   ```
+
+2. **配置真实模型**（任一 OpenAI 兼容端点，如 DashScope）：
+
+   ```bash
+   export OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+   export OPENAI_API_KEY="sk-..."
+   export OPENAI_MODEL="qwen3-max"
+   export QPW_BIN="$(command -v qwenpaw)"
+
+   ./scripts/demo.sh
+   ```
+
+   demo 会检测到 `QPW_BIN` 并注入真实模型配置；控制面 → agent-runtime →
+   qwenpaw acp 全链路走通，`GET /v1/users/{id}/workspace` 的 `kernel` 字段
+   显示 `enabled: true / connected: true / version: 2.x`。
+
+原理与关键设计：
+
+- `agent-runtime` 实现 **ACP v1 客户端**（`internal/agent/acpclient.go`），
+  以 stdio JSON-RPC 管理 `qwenpaw acp --workspace <用户工作区> --runtime-provider openai-env` 子进程。
+- **凭证不落盘**：模型配置经 `OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL`
+  环境变量注入，进程退出即销毁；模型热切换 = 重启子进程注入新凭证，工作区数据不丢。
+- **有状态**：`--workspace` 指向用户持久工作区；会话历史另有
+  `.agent/conversation.jsonl` 兜底，休眠/唤醒与内核重启后消息序号连续。
+- **权限策略**：QwenPaw Tool Guard 的权限请求默认拒绝（headless 安全），
+  可设置 `"tool_guard_mode": "bypass"` 信任沙箱，或挂接控制面审批流。
+- **自愈**：内核子进程异常退出后下一次请求自动重启重建会话，`session/prompt`
+  对传输故障自动重试一次。
+- **优雅回退**：qwenpaw 缺失/版本过低/模型为 mock 时自动回退 mock LLM，
+  原有零依赖 demo 不受影响。
+
+Docker 镜像（`agent-image/Dockerfile`）已内置 QwenPaw（Python 运行时阶段
+`pip install qwenpaw`），构建时间较长、镜像体积较大属预期；本地进程后端用
+`QPW_BIN` 指向宿主已安装的 qwenpaw 即可。
 
 ## 三种运行模式
 
@@ -155,7 +203,8 @@ cd k8sbackend && go build -o ../bin/control-plane-k8s ./cmd/control-plane
 ## 已知边界（有意为之）
 
 - CodeReview Worker 的本地实现扫描本地目录的 TODO/FIXME；GitHub/GitLab PR 评审需接入 VCS OAuth（数据表已预留 `user_vcs_tokens`）。
-- mock LLM 默认开箱即用；连真实模型只需 `POST /models` 传入 OpenAI 兼容的 base_url/apiKey。
+- mock LLM 默认开箱即用；连真实模型只需 `POST /models` 传入 OpenAI 兼容的 base_url/apiKey
+  （启用 QwenPaw ACP 内核需 qwenpaw >= 2.0，见上文「QwenPaw ACP 内核接入」）。
 - 进程后端的多副本/分布式锁用进程内互斥替代；生产模式启用 Redis + PostgreSQL 后即为多副本就绪。
 
 # cloudeagent

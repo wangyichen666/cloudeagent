@@ -21,11 +21,13 @@ type Daemon struct {
 	started  time.Time
 }
 
-func NewDaemon(workspace string, configFile string) (*Daemon, error) {
+// NewDaemon 创建实例运行时。acpBin 为 QwenPaw ACP 内核可执行文件
+// （qwenpaw）；留空或不可用则自动回退 mock LLM。
+func NewDaemon(workspace string, configFile string, acpBin string) (*Daemon, error) {
 	cfg := NewConfigManager(configFile, func(c *RuntimeConfig) {
 		log.Printf("[agent] 模型配置热加载: model=%s provider=%s", c.Model, c.Provider)
 	})
-	session, err := NewSession(workspace, cfg)
+	session, err := NewSession(workspace, cfg, acpBin)
 	if err != nil {
 		return nil, fmt.Errorf("init session: %w", err)
 	}
@@ -55,12 +57,14 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := d.cfg.Get()
+	kernel := d.session.KernelStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "ok",
 		"workspace": d.session.Workspace(),
 		"messages":  idx,
 		"model":     cfg.Model,
 		"provider":  cfg.Provider,
+		"kernel":    kernel,
 		"uptime_s":  int(time.Since(d.started).Seconds()),
 	})
 }
@@ -76,6 +80,9 @@ func (d *Daemon) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applied := d.cfg.Apply(&cfg)
+	// 模型/凭证变化立即同步到 ACP 内核（凭证差异 → 重启子进程注入新环境）。
+	// 异步执行避免阻塞 HTTP 响应；重启期间旧会话保持，新请求自动等待。
+	go d.session.SyncConfig(context.Background())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"model":    applied.Model,
@@ -118,11 +125,13 @@ func (d *Daemon) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 		"workspace": d.session.Workspace(),
 		"files":     files,
 		"recent":    history,
+		"kernel":    d.session.KernelStatus(),
 	})
 }
 
 // handleSessionWS 是流式会话：客户端发送 {"type":"chat","message":...}，
-// 服务端回 {"type":"delta","text":...}（可多条），最后 {"type":"done",...}。
+// 服务端回 {"type":"delta"/"thought"/"tool_call"/"usage"/"error",...}，
+// 最后 {"type":"done",...}。真实 ACP 内核逐增量转发，mock 分片模拟。
 func (d *Daemon) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := d.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -140,19 +149,14 @@ func (d *Daemon) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		}
 		text, _ := msg["message"].(string)
 		sessionID, _ := msg["session_id"].(string)
-		resp, err := d.session.Chat(context.Background(), &ChatRequest{Message: text, SessionID: sessionID})
+		resp, err := d.session.ChatStream(context.Background(), &ChatRequest{Message: text, SessionID: sessionID},
+			func(kind string, payload map[string]any) error {
+				payload["type"] = kind
+				return conn.WriteJSON(payload)
+			})
 		if err != nil {
 			_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
 			continue
-		}
-		// mock 模式分片推送，演示流式；真实模式单条 delta。
-		chunks := chunkText(resp.Reply, 24)
-		if len(chunks) <= 1 {
-			chunks = []string{resp.Reply}
-		}
-		for _, chunk := range chunks {
-			_ = conn.WriteJSON(map[string]any{"type": "delta", "text": chunk})
-			time.Sleep(15 * time.Millisecond)
 		}
 		_ = conn.WriteJSON(map[string]any{
 			"type":          "done",
@@ -162,6 +166,12 @@ func (d *Daemon) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			"mock":          resp.Mock,
 		})
 	}
+}
+
+// Close 停止 ACP 子进程（实例退出时调用，保证子进程不残留）。
+func (d *Daemon) Close() {
+	d.session.Close()
+	d.cfg.Close()
 }
 
 func chunkText(s string, n int) []string {
