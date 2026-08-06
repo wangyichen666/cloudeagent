@@ -157,3 +157,5 @@ cd k8sbackend && go build -o ../bin/control-plane-k8s ./cmd/control-plane
 - CodeReview Worker 的本地实现扫描本地目录的 TODO/FIXME；GitHub/GitLab PR 评审需接入 VCS OAuth（数据表已预留 `user_vcs_tokens`）。
 - mock LLM 默认开箱即用；连真实模型只需 `POST /models` 传入 OpenAI 兼容的 base_url/apiKey。
 - 进程后端的多副本/分布式锁用进程内互斥替代；生产模式启用 Redis + PostgreSQL 后即为多副本就绪。
+
+# cloudeagent
