@@ -1,18 +1,3 @@
-# Binaries
-/bin/
-/data/
-*.exe
-
-# Local dev
-.env
+# 仓库根
 .DS_Store
-coverage.out
 .idea/
-
-# Go
-go.work
-*.test
-
-# Docker / runtime
-*.log
-*.pid
