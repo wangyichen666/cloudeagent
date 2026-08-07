@@ -12,6 +12,7 @@ import (
 // 本地模式 Endpoint 形如 http://127.0.0.1:<port>，
 // K8s 生产路径形如 http://agent-<userID>-0.agent-svc.<ns>.svc.cluster.local:18585。
 type Info struct {
+	UserID    string
 	Workspace string
 	Endpoint  string
 	Port      int

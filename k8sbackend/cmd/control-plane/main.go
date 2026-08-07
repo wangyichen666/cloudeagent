@@ -86,6 +86,12 @@ func main() {
 
 	seats := controlplane.NewMockSeatService()
 	manager := controlplane.NewManager(st, cache, bk, seats)
+	// 启动即发现既有 StatefulSet：内存模式下控制面重启不丢实例登记。
+	if infos, err := bk.Reconcile(ctx); err != nil {
+		log.Printf("[control-plane] reconcile 失败（继续启动）: %v", err)
+	} else if err := manager.Seed(ctx, infos); err != nil {
+		log.Printf("[control-plane] seed 失败（继续启动）: %v", err)
+	}
 	reaper := controlplane.NewReaper(manager, *idleTimeout, 15*time.Second)
 	review := controlplane.NewReviewWorker(st, manager.GetModelConfig)
 	auth := controlplane.NewAuthenticator(*namespace, *adminToken)

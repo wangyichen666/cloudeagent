@@ -136,7 +136,35 @@ func (b *Backend) Delete(ctx context.Context, userID string) error {
 }
 
 func (b *Backend) info(userID string) *backend.Info {
-	return &backend.Info{Workspace: b.pvcName(userID), Endpoint: b.Endpoint(userID), Port: agentPort}
+	return &backend.Info{
+		UserID:    userID,
+		Workspace: b.pvcName(userID),
+		Endpoint:  b.Endpoint(userID),
+		Port:      agentPort,
+	}
+}
+
+// Reconcile 发现命名空间内已由本平台托管的 StatefulSet（app=cloude-agent,
+// role=data-plane），用于控制面重启后恢复内存态实例登记（生产建议配合
+// PostgreSQL 存储，内存模式时此能力尤为重要）。
+func (b *Backend) Reconcile(ctx context.Context) ([]backend.Info, error) {
+	stsList, err := b.client.AppsV1().StatefulSets(b.cfg.Namespace).List(
+		ctx,
+		metav1.ListOptions{LabelSelector: "app=cloude-agent,role=data-plane"},
+	)
+	if err != nil {
+		return nil, err
+	}
+	var out []backend.Info
+	for i := range stsList.Items {
+		sts := &stsList.Items[i]
+		userID := sts.Labels["user-id"]
+		if userID == "" {
+			continue
+		}
+		out = append(out, *b.info(userID))
+	}
+	return out, nil
 }
 
 func (b *Backend) ensureHeadlessService(ctx context.Context) error {

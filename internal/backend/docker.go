@@ -92,6 +92,7 @@ func (d *Docker) startInfo(ctx context.Context, userID string) (*Info, error) {
 		return nil, fmt.Errorf("解析端口失败: %q", portStr)
 	}
 	return &Info{
+		UserID:    userID,
 		Workspace: d.volumeName(userID),
 		Endpoint:  fmt.Sprintf("http://%s:%d", host, port),
 		Port:      port,

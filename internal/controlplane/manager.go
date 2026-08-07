@@ -178,6 +178,37 @@ func (m *Manager) Get(ctx context.Context, userID string) (*models.Instance, err
 	return m.store.GetInstance(ctx, userID)
 }
 
+// Seed 把启动时发现的后端实例登记进状态存储（幂等）：
+// 控制面重启后（内存模式）自动恢复已有实例，避免 Pod 在跑但列表为空。
+// 模型凭证仍遵守「不落盘」设计：不在此恢复，唤醒时由席位/前端重新注入。
+func (m *Manager) Seed(ctx context.Context, infos []backend.Info) error {
+	for _, info := range infos {
+		if info.UserID == "" {
+			continue
+		}
+		if _, err := m.store.GetInstance(ctx, info.UserID); err == nil {
+			continue
+		}
+		now := time.Now()
+		inst := &models.Instance{
+			UserID:       info.UserID,
+			InstanceName: "agent-" + info.UserID,
+			Status:       models.StatusRunning,
+			Workspace:    info.Workspace,
+			Endpoint:     info.Endpoint,
+			Port:         info.Port,
+			LastActiveAt: now,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		if err := m.store.CreateInstance(ctx, inst); err != nil {
+			return err
+		}
+		log.Printf("[manager] reconcile: 恢复实例 %s endpoint=%s", info.UserID, info.Endpoint)
+	}
+	return nil
+}
+
 func (m *Manager) List(ctx context.Context) ([]*models.Instance, error) {
 	return m.store.ListInstances(ctx)
 }

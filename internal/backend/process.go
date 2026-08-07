@@ -83,7 +83,7 @@ func (p *Process) Create(ctx context.Context, userID string) (*Info, error) {
 	if err := p.spawn(userID, port); err != nil {
 		return nil, err
 	}
-	return &Info{Workspace: ws, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Port: port}, nil
+	return &Info{UserID: userID, Workspace: ws, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Port: port}, nil
 }
 
 func (p *Process) Start(ctx context.Context, userID string) (*Info, error) {
@@ -98,13 +98,13 @@ func (p *Process) Start(ctx context.Context, userID string) (*Info, error) {
 	if p.alive(userID) {
 		endpoint := fmt.Sprintf("http://127.0.0.1:%d", port)
 		if err := WaitHealth(ctx, endpoint, 3*time.Second); err == nil {
-			return &Info{Workspace: ws, Endpoint: endpoint, Port: port}, nil
+			return &Info{UserID: userID, Workspace: ws, Endpoint: endpoint, Port: port}, nil
 		}
 	}
 	if err := p.spawn(userID, port); err != nil {
 		return nil, err
 	}
-	return &Info{Workspace: ws, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Port: port}, nil
+	return &Info{UserID: userID, Workspace: ws, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Port: port}, nil
 }
 
 func (p *Process) Stop(ctx context.Context, userID string) error {
