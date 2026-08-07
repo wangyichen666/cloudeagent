@@ -1,7 +1,23 @@
-# CloudeAgent 本地方案
+# cloud-backend（CloudeAgent 业务系统）
 
 > 一套**多租户、按需编排、有状态**的 AI 编码 Agent 平台的本地实现。
 > 代码与设计完全对照需求文档的 7 大北极星：多租户隔离 / 按需编排 / 有状态 / 可路由 / 动态配置 / 安全 / 可观测+自愈。
+
+> 本仓库是 **cloud-backend**：多租户 Agent 平台的业务系统（控制面 + 实例运行时），
+> 负责创建/休眠/唤醒「内置 Agent 的 Pod」、鉴权、路由、评审与前端 API。
+> **不直接连接 Pod**——与 Pod 内 Agent 的通信全部经独立的 **cloud-gateway** 网关。
+
+## 三仓库结构
+
+| 项目 | 位置 | 职责 |
+| --- | --- | --- |
+| **cloud-backend** | 本仓库 | 业务系统：生命周期、鉴权、评审、Reaper、前端 API |
+| **cloud-gateway** | `~/Documents/ChatGPT/cloud-gateway`（独立仓库） | 数据面网关：路由注册 + 到 Pod 内 Agent 的 REST/WS 转发 |
+| **cloud-web** | `~/Documents/ChatGPT/cloud-web`（独立仓库） | 前端控制台（Vite + React + TS） |
+
+```
+前端(cloud-web) → backend(cloud-backend) → gateway(cloud-gateway) → agent Pod
+```
 
 本仓库把「Kubernetes + Go 控制面 + StatefulSet 每用户一实例」的云端架构，落成了一个**可以在这台机器上直接跑起来**的分层实现：
 
@@ -10,7 +26,7 @@
 | 控制面 | 无状态 Go 服务：API / 编排 / 鉴权 / 路由 | `cmd/control-plane`（Go，同一套逻辑） |
 | 数据面 | K8s 每用户一个 StatefulSet Pod | 三选一：本地进程 / Docker 容器 / K8s StatefulSet |
 | 状态面 | PostgreSQL + Redis | 内存（默认，零依赖）/ PostgreSQL + Redis（生产语义） |
-| Agent 运行时 | 承载编码会话的 daemon | `cmd/agent-runtime`：健康检查、会话、配置热重载 |
+| Agent 运行时 | 承载编码会话的 daemon（Pod 内） | `cmd/agent-runtime`：健康检查、会话、配置热重载 |
 | Agent 内核 | 真正的编码能力（工具调用/记忆/沙箱） | **QwenPaw 2.x**，经 ACP 协议接入（`qwenpaw acp`） |
 | 模型接入 | 席位服务动态注入 baseURL/apiKey | mock LLM 开箱即用；QwenPaw 经 env 注入凭证，热切换无需重启 |
 
@@ -125,25 +141,19 @@ docker compose up -d postgres redis
   --redis-addr 127.0.0.1:6379
 ```
 
-## 前端控制台（web/）
+## 前端控制台（独立项目 cloud-web）
 
-`web/` 是一个 Vite + React + TypeScript 前端，对接四个核心接口：**创建 Agent、
-连接 Agent（WebSocket 流式对话）、读取持久化对话历史**，以及模型热切换、
-休眠/唤醒/删除。
+前端已拆分为独立仓库 `~/Documents/ChatGPT/cloud-web`：
 
 ```bash
-cd web
+cd ~/Documents/ChatGPT/cloud-web
 npm install
 npm run dev        # http://localhost:5173
 ```
 
-开发代理把 `/v1` 转发到 `http://127.0.0.1:18080`（可用环境变量 `VITE_API_BASE`
-覆盖）。控制面在 kind 集群内时，先 `kubectl port-forward -n cloude-control
-svc/control-plane-svc 18080:8080` 再启动前端。
-
-登录后填入管理 Token（默认 `dev-admin-token`）即可创建/连接 Agent；前端通过
-`GET /v1/users/{id}/connect` 获取实例 token 与**经控制面转发**的 WebSocket 地址，
-浏览器无需直连 Pod。
+开发代理把 `/v1` 转发到 `http://127.0.0.1:18080`（backend 控制面，可用
+`VITE_API_BASE` 覆盖）；backend 在 kind 集群内时先 `kubectl port-forward -n
+cloude-control svc/control-plane-svc 18080:8080`。
 
 ## API 速览（完整见 [docs/api.md](docs/api.md)）
 

@@ -73,8 +73,8 @@ curl -H "$AUTH" "$CP/v1/users/u-1001/history?limit=50&session_id=s-1786..."
 对话历史由 agent-runtime 自动持久化到工作区 `.agent/conversation.jsonl`
 （K8s 路径为 PVC），休眠/唤醒、内核重启后不丢失。
 
-前端项目见 [`web/`](../web/)（Vite + React + TypeScript）：`npm run dev` 后访问
-http://localhost:5173，开发代理把 `/v1` 转发到控制面。
+前端项目为独立仓库 `~/Documents/ChatGPT/cloud-web`（Vite + React + TypeScript）：
+`npm run dev` 后访问 http://localhost:5173，开发代理把 `/v1` 转发到控制面。
 
 ## WebSocket 协议（/v1/users/{id}/session）
 
