@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -350,7 +349,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	agentURL := "ws" + strings.TrimPrefix(inst.Endpoint, "http") + "/v1/session"
+	// 流式会话经 gateway 转发到 Pod 内 agent（backend 不直连数据面）。
+	agentURL := s.cfg.Manager.GatewayWSURL(userID)
+	if agentURL == "" {
+		_ = clientConn.WriteJSON(map[string]any{"type": "error", "message": "未配置数据面网关（--gateway）"})
+		return
+	}
 	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, nil)
 	if err != nil {
 		_ = clientConn.WriteJSON(map[string]any{"type": "error", "message": "无法连接实例: " + err.Error()})

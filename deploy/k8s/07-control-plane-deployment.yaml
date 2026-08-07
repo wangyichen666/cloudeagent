@@ -31,6 +31,7 @@ spec:
             - --namespace=cloude-agent
             - --agent-image=cloude-agent:local
             - --admin-token=dev-admin-token
+            - --gateway=http://cloude-gateway:18500
           ports:
             - containerPort: 8080
               name: http

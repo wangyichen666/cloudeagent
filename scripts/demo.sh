@@ -9,9 +9,11 @@ ADMIN_TOKEN="${ADMIN_TOKEN:-dev-admin-token}"
 USER_ID="${USER_ID:-u-demo}"
 NAMESPACE="${NAMESPACE:-cloude-agent}"
 QPW_BIN="${QPW_BIN:-}"            # 设置后启用 QwenPaw ACP 真实内核（如 QPW_BIN=/usr/local/bin/qwenpaw）
+GATEWAY_BIN="${GATEWAY_BIN:-}"    # cloud-gateway 可执行文件；默认从同级目录 ../cloud-gateway 构建
 DATA_DIR="$(pwd)/data/demo"
 BIN_DIR="$(pwd)/bin"
 CP_PID=""
+GW_PID=""
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m  ✓ %s\033[0m\n' "$*"; }
@@ -23,6 +25,7 @@ api()  { # api METHOD PATH [BODY] [AUTH]
 
 cleanup() {
   [ -n "$CP_PID" ] && kill "$CP_PID" 2>/dev/null || true
+  [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true
   pkill -f "bin/agent-runtime --listen" 2>/dev/null || true
   rm -rf "$DATA_DIR"
 }
@@ -49,6 +52,29 @@ build() {
       sh -c "mkdir -p bin && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o bin/control-plane ./cmd/control-plane && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o bin/agent-runtime ./cmd/agent-runtime"
   fi
   ok "编译 control-plane / agent-runtime"
+
+  # cloud-gateway（数据面网关，独立项目）：backend 只经它连接 agent
+  if [ -z "$GATEWAY_BIN" ]; then
+    local gw_src
+    gw_src="$(cd "$(dirname "$0")/.." && pwd)/../cloud-gateway"
+    if [ -d "$gw_src" ]; then
+      GATEWAY_BIN="$gw_src/bin/gateway"
+      if [ ! -x "$GATEWAY_BIN" ]; then
+        if command -v go >/dev/null 2>&1; then
+          (cd "$gw_src" && go build -o bin/gateway ./cmd/gateway)
+        else
+          local goos goarch
+          case "$(uname -s)" in Darwin) goos=darwin ;; *) goos=linux ;; esac
+          case "$(uname -m)" in arm64|aarch64) goarch=arm64 ;; *) goarch=amd64 ;; esac
+          docker run --rm -v "$gw_src":/app -w /app golang:1.24-alpine \
+            sh -c "CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o bin/gateway ./cmd/gateway"
+        fi
+      fi
+      ok "编译 cloud-gateway"
+    else
+      echo "  (未找到 ../cloud-gateway 项目，跳过 gateway；--gateway 会连不上)" >&2
+    fi
+  fi
 }
 
 port_free() {
@@ -99,6 +125,12 @@ fi
 build
 
 step "启动控制面"
+if [ -n "$GATEWAY_BIN" ] && [ -x "$GATEWAY_BIN" ]; then
+  "$GATEWAY_BIN" --listen 127.0.0.1:18500 >"$DATA_DIR/gateway.log" 2>&1 &
+  GW_PID=$!
+  sleep 0.5
+  ok "数据面网关已启动 (127.0.0.1:18500)"
+fi
 "$BIN_DIR/control-plane" \
   --listen "127.0.0.1:${PORT}" \
   --backend process \
@@ -106,7 +138,8 @@ step "启动控制面"
   --agent-bin "$BIN_DIR/agent-runtime" \
   --data-dir "$DATA_DIR" \
   --admin-token "$ADMIN_TOKEN" \
-  --namespace "$NAMESPACE" >"$DATA_DIR/control-plane.log" 2>&1 &
+  --namespace "$NAMESPACE" \
+  --gateway "http://127.0.0.1:18500" >"$DATA_DIR/control-plane.log" 2>&1 &
 CP_PID=$!
 wait_ready
 ok "控制面已就绪"

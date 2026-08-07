@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"cloude-agent/internal/controlplane"
+	"cloude-agent/internal/gateway"
 	"cloude-agent/internal/store"
 	"cloude-agent/k8sbackend"
 )
@@ -31,6 +32,7 @@ func main() {
 		storageClass = flag.String("storage-class", "", "PVC StorageClass（空=默认，生产建议 longhorn）")
 		removePVC   = flag.Bool("remove-pvc-on-delete", true, "删除实例时同时删除 PVC")
 		adminToken  = flag.String("admin-token", "dev-admin-token", "管理面 Bearer Token")
+		gatewayURL  = flag.String("gateway", "http://cloude-gateway:18500", "数据面网关地址（cloud-gateway Service）")
 		redisAddr   = flag.String("redis-addr", "", "Redis 地址（多副本共享热状态/锁）")
 		dsn         = flag.String("dsn", "", "PostgreSQL DSN（建议生产必填）")
 		idleTimeout = flag.Duration("idle-timeout", 0, "空闲自动休眠阈值，0=禁用")
@@ -85,7 +87,7 @@ func main() {
 	}
 
 	seats := controlplane.NewMockSeatService()
-	manager := controlplane.NewManager(st, cache, bk, seats)
+	manager := controlplane.NewManager(st, cache, bk, seats, gateway.New(*gatewayURL))
 	// 启动即发现既有 StatefulSet：内存模式下控制面重启不丢实例登记。
 	if infos, err := bk.Reconcile(ctx); err != nil {
 		log.Printf("[control-plane] reconcile 失败（继续启动）: %v", err)

@@ -14,7 +14,7 @@ func newTestManager(t *testing.T, bk *fakeBackend) (*Manager, *store.Memory) {
 	st := store.NewMemory()
 	cfgCache := store.NewMemoryCache(time.Hour)
 	seats := NewMockSeatService()
-	return NewManager(st, cfgCache, bk, seats), st
+	return NewManager(st, cfgCache, bk, seats, newStubGateway()), st
 }
 
 func TestLifecycleStateMachine(t *testing.T) {

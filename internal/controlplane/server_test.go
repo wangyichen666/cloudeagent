@@ -19,7 +19,7 @@ func TestServerEndToEnd(t *testing.T) {
 	bk.setEndpoint("u-3001", agent.URL)
 
 	st := store.NewMemory()
-	manager := NewManager(st, store.NewMemoryCache(time.Hour), bk, NewMockSeatService())
+	manager := NewManager(st, store.NewMemoryCache(time.Hour), bk, NewMockSeatService(), newStubGateway())
 	reaper := NewReaper(manager, 0, time.Minute)
 	review := NewReviewWorker(st, manager.GetModelConfig)
 	auth := NewAuthenticator("cloude-agent", "admin-token")

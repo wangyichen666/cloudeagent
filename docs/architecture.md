@@ -6,13 +6,24 @@
 
 ```mermaid
 flowchart TB
-    Client[客户端/前端] -->|HTTPS + WS| CP[控制面 control-plane<br/>无状态 Go 服务]
-    CP -->|编排/路由/注入| DP[数据面<br/>process 进程 / docker 容器 / StatefulSet Pod]
-    CP -->|元数据读写| SP[状态面<br/>memory / PostgreSQL + Redis]
-    DP -->|/health /v1/config /v1/chat /v1/session| Agent[agent-runtime]
+    Client[客户端/前端] -->|HTTPS + WS| BE[backend 控制面<br/>cloud-backend：业务与生命周期]
+    BE -->|只调稳定 API| GW[cloud-gateway 数据面网关<br/>连接管理·转发·路由注册]
+    GW -->|Pod DNS + 内部协议| Agent[agent-runtime<br/>Pod 内子进程]
     Agent -->|ACP stdio JSON-RPC| QPW[qwenpaw acp<br/>QwenPaw 2.x Agent 内核]
+    BE -->|元数据读写| SP[状态面<br/>memory / PostgreSQL + Redis]
     QPW -->|模型调用| LLM[OpenAI 兼容端点 / mock]
 ```
+
+两套系统（两个独立项目）：
+
+- **cloud-backend**（当前仓库）：业务系统——实例生命周期状态机、鉴权、路由、
+  评审、Reaper、前端 API。**不直连 Pod**。
+- **cloud-gateway**（独立仓库，`~/Documents/ChatGPT/cloud-gateway`）：数据面
+  网关——唯一知道「agent 在哪」的系统。backend 创建/唤醒实例后把 endpoint
+  注册给它，对话/会话/历史/配置全部经它转发；它再按内部协议连接 Pod 内
+  agent-runtime。
+
+Pod 内结构不变：agent-runtime（主进程）+ qwenpaw acp（ACP 内核子进程）。
 
 | 文档设计 | 本地实现 | 说明 |
 | --- | --- | --- |

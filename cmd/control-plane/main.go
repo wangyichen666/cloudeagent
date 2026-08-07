@@ -12,6 +12,7 @@ import (
 
 	"cloude-agent/internal/backend"
 	"cloude-agent/internal/controlplane"
+	"cloude-agent/internal/gateway"
 	"cloude-agent/internal/store"
 )
 
@@ -30,6 +31,7 @@ func main() {
 
 		namespace  = flag.String("namespace", "cloude-agent", "命名空间（用于派生实例 token 与 K8s 命名）")
 		adminToken = flag.String("admin-token", "dev-admin-token", "管理面 Bearer Token")
+		gatewayURL = flag.String("gateway", "http://127.0.0.1:18500", "数据面网关地址（cloud-gateway），backend 只经它连接 Pod 内 agent")
 
 		idleTimeout  = flag.Duration("idle-timeout", 0, "空闲自动休眠阈值，0=禁用")
 		reapInterval = flag.Duration("reap-interval", 15*time.Second, "idle reaper 扫描间隔")
@@ -104,7 +106,7 @@ func main() {
 	seats.APIKey = *apiKey
 	seats.Models = splitModels(*modelList)
 
-	manager := controlplane.NewManager(st, cache, bk, seats)
+	manager := controlplane.NewManager(st, cache, bk, seats, gateway.New(*gatewayURL))
 	reaper := controlplane.NewReaper(manager, *idleTimeout, *reapInterval)
 	reviewWorker := controlplane.NewReviewWorker(st, manager.GetModelConfig)
 	auth := controlplane.NewAuthenticator(*namespace, *adminToken)

@@ -1,14 +1,9 @@
 package controlplane
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
-	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +11,21 @@ import (
 	"cloude-agent/internal/models"
 	"cloude-agent/internal/store"
 )
+
+// AgentGateway 是 backend 依赖的数据面网关抽象：
+// 业务层只按 userID 调用，不感知 Pod 地址与内部协议。
+type AgentGateway interface {
+	Register(ctx context.Context, userID, endpoint string) error
+	Unregister(ctx context.Context, userID string) error
+	Chat(ctx context.Context, userID, message, sessionID string) (*models.ChatResponse, error)
+	Workspace(ctx context.Context, userID string) (map[string]any, error)
+	History(ctx context.Context, userID string, limit int, sessionID string) (map[string]any, error)
+	NewSession(ctx context.Context, userID string) (map[string]any, error)
+	SessionInfo(ctx context.Context, userID string) (string, error)
+	Health(ctx context.Context, userID string) (map[string]any, error)
+	SetConfig(ctx context.Context, userID string, cfg *models.ModelConfig) error
+	WSUpstreamURL(userID string) string
+}
 
 // Manager 是编排核心（文档 4.3 生命周期状态机）：
 //   [None] -> [Running] <-> [Suspended] -> [None]
@@ -25,17 +35,30 @@ type Manager struct {
 	cache         store.ModelConfigCache
 	backend       backend.InstanceBackend
 	seats         SeatService
+	gateway       AgentGateway
 	injectTimeout time.Duration
 	mu            sync.Mutex // 串行化单实例的状态迁移（本地等价于 Redis 分布式锁）
 }
 
-func NewManager(store store.Store, cache store.ModelConfigCache, bk backend.InstanceBackend, seats SeatService) *Manager {
+func NewManager(store store.Store, cache store.ModelConfigCache, bk backend.InstanceBackend, seats SeatService, gw AgentGateway) *Manager {
 	return &Manager{
 		store:         store,
 		cache:         cache,
 		backend:       bk,
 		seats:         seats,
+		gateway:       gw,
 		injectTimeout: 5 * time.Second,
+	}
+}
+
+// registerGateway 把实例地址登记到 gateway（失败不阻断业务，仅告警；
+// 后续转发会在 gateway 侧给出明确未注册错误）。
+func (m *Manager) registerGateway(ctx context.Context, userID, endpoint string) {
+	if m.gateway == nil {
+		return
+	}
+	if err := m.gateway.Register(ctx, userID, endpoint); err != nil {
+		log.Printf("[manager] gateway 注册失败 user=%s: %v", userID, err)
 	}
 }
 
@@ -76,12 +99,13 @@ func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, 
 		_ = m.backend.Delete(ctx, userID)
 		return m.failInstance(ctx, userID, inst, err)
 	}
+	m.registerGateway(ctx, userID, inst.Endpoint)
 	cfg, err := m.resolveConfig(ctx, userID)
 	if err != nil {
 		_ = m.backend.Delete(ctx, userID)
 		return m.failInstance(ctx, userID, inst, err)
 	}
-	if err := m.injectConfig(ctx, inst.Endpoint, cfg); err != nil {
+	if err := m.setConfigViaGateway(ctx, userID, cfg); err != nil {
 		_ = m.backend.Delete(ctx, userID)
 		return m.failInstance(ctx, userID, inst, err)
 	}
@@ -141,11 +165,12 @@ func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *models.In
 	if err := backend.WaitHealth(ctx, inst.Endpoint, 15*time.Second); err != nil {
 		return m.failInstance(ctx, userID, inst, err)
 	}
+	m.registerGateway(ctx, userID, inst.Endpoint)
 	cfg, err := m.resolveConfig(ctx, userID)
 	if err != nil {
 		return m.failInstance(ctx, userID, inst, err)
 	}
-	if err := m.injectConfig(ctx, inst.Endpoint, cfg); err != nil {
+	if err := m.setConfigViaGateway(ctx, userID, cfg); err != nil {
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	inst.Status = models.StatusRunning
@@ -165,6 +190,9 @@ func (m *Manager) Delete(ctx context.Context, userID string) error {
 	defer m.mu.Unlock()
 	if err := m.backend.Delete(ctx, userID); err != nil {
 		return fmt.Errorf("销毁实例失败: %w", err)
+	}
+	if m.gateway != nil {
+		_ = m.gateway.Unregister(ctx, userID)
 	}
 	_ = m.cache.Delete(ctx, userID)
 	if err := m.store.DeleteInstance(ctx, userID); err != nil {
@@ -204,6 +232,7 @@ func (m *Manager) Seed(ctx context.Context, infos []backend.Info) error {
 		if err := m.store.CreateInstance(ctx, inst); err != nil {
 			return err
 		}
+		m.registerGateway(ctx, info.UserID, info.Endpoint)
 		log.Printf("[manager] reconcile: 恢复实例 %s endpoint=%s", info.UserID, info.Endpoint)
 	}
 	return nil
@@ -224,7 +253,7 @@ func (m *Manager) SetModelConfig(ctx context.Context, userID string, cfg *models
 	if inst.Status != models.StatusRunning {
 		return nil, fmt.Errorf("实例未运行，请先唤醒再切换模型")
 	}
-	if err := m.injectConfig(ctx, inst.Endpoint, cfg); err != nil {
+	if err := m.setConfigViaGateway(ctx, userID, cfg); err != nil {
 		return nil, fmt.Errorf("热加载失败: %w", err)
 	}
 	_ = m.cache.Set(ctx, userID, cfg, 24*time.Hour)
@@ -249,56 +278,25 @@ func (m *Manager) resolveConfig(ctx context.Context, userID string) (*models.Mod
 	return m.seats.Resolve(ctx, userID)
 }
 
-// injectConfig 把运行时模型配置注入实例（HTTP 热加载，凭证仅驻留内存）。
-func (m *Manager) injectConfig(ctx context.Context, endpoint string, cfg *models.ModelConfig) error {
-	body, err := json.Marshal(cfg)
-	if err != nil {
-		return err
+// setConfigViaGateway 经 gateway 向实例注入运行时模型配置（凭证仅驻留内存）。
+func (m *Manager) setConfigViaGateway(ctx context.Context, userID string, cfg *models.ModelConfig) error {
+	if m.gateway == nil {
+		return fmt.Errorf("未配置数据面网关（--gateway）")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/v1/config", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: m.injectTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("config inject status %d", resp.StatusCode)
-	}
-	return nil
+	return m.gateway.SetConfig(ctx, userID, cfg)
 }
 
 // Chat 走控制面统一入口：鉴权/限流/审计都在这里做（文档 5.2 方案 A）。
 func (m *Manager) Chat(ctx context.Context, userID, message string) (*models.ChatResponse, error) {
-	inst, err := m.ensureRunning(ctx, userID)
-	if err != nil {
+	if _, err := m.ensureRunning(ctx, userID); err != nil {
 		return nil, err
 	}
-	payload := map[string]string{"message": message}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, inst.Endpoint+"/v1/chat", bytes.NewReader(body))
+	out, err := m.gateway.Chat(ctx, userID, message, "")
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("agent chat status %d", resp.StatusCode)
-	}
-	var out models.ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
 	_ = m.store.TouchActivity(ctx, userID)
-	return &out, nil
+	return out, nil
 }
 
 // ensureRunning 保证实例运行（文档：唤醒后再路由）。
@@ -315,77 +313,27 @@ func (m *Manager) ensureRunning(ctx context.Context, userID string) (*models.Ins
 
 // Workspace 代理查询实例工作区（可观测）。
 func (m *Manager) Workspace(ctx context.Context, userID string) (map[string]any, error) {
-	inst, err := m.ensureRunning(ctx, userID)
-	if err != nil {
+	if _, err := m.ensureRunning(ctx, userID); err != nil {
 		return nil, err
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(inst.Endpoint + "/v1/workspace")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return m.gateway.Workspace(ctx, userID)
 }
 
 // History 代理读取实例的持久化对话历史（.agent/conversation.jsonl）。
 // sessionID 非空时只返回该会话的记录。
 func (m *Manager) History(ctx context.Context, userID string, limit int, sessionID string) (map[string]any, error) {
-	inst, err := m.ensureRunning(ctx, userID)
-	if err != nil {
+	if _, err := m.ensureRunning(ctx, userID); err != nil {
 		return nil, err
 	}
-	u := inst.Endpoint + "/v1/history"
-	if limit > 0 {
-		u += fmt.Sprintf("?limit=%d", limit)
-	}
-	if sessionID != "" {
-		sep := "?"
-		if strings.Contains(u, "?") {
-			sep = "&"
-		}
-		u += sep + "session_id=" + url.QueryEscape(sessionID)
-	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(u)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return m.gateway.History(ctx, userID, limit, sessionID)
 }
 
 // NewSession 让 Pod 内的 QwenPaw 真实开启一个新会话。
 func (m *Manager) NewSession(ctx context.Context, userID string) (map[string]any, error) {
-	inst, err := m.ensureRunning(ctx, userID)
-	if err != nil {
+	if _, err := m.ensureRunning(ctx, userID); err != nil {
 		return nil, err
 	}
-	body, _ := json.Marshal(map[string]any{})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, inst.Endpoint+"/v1/session/new", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("agent session/new status %d", resp.StatusCode)
-	}
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return m.gateway.NewSession(ctx, userID)
 }
 
 // Connect 返回前端「连接 Agent」所需信息：确保实例运行、拉取内核状态。
@@ -396,22 +344,14 @@ func (m *Manager) Connect(ctx context.Context, userID string) (map[string]any, e
 		return nil, err
 	}
 	kernel := map[string]any{}
-	if resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(inst.Endpoint + "/health"); err == nil {
-		defer resp.Body.Close()
-		var health map[string]any
-		if json.NewDecoder(resp.Body).Decode(&health) == nil {
-			if k, ok := health["kernel"].(map[string]any); ok {
-				kernel = k
-			}
+	if health, err := m.gateway.Health(ctx, userID); err == nil {
+		if k, ok := health["kernel"].(map[string]any); ok {
+			kernel = k
 		}
 	}
 	sessionID := ""
-	if resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(inst.Endpoint + "/v1/session/info"); err == nil {
-		defer resp.Body.Close()
-		var info map[string]any
-		if json.NewDecoder(resp.Body).Decode(&info) == nil {
-			sessionID, _ = info["session_id"].(string)
-		}
+	if sid, err := m.gateway.SessionInfo(ctx, userID); err == nil {
+		sessionID = sid
 	}
 	return map[string]any{
 		"user_id":   userID,
@@ -430,6 +370,14 @@ func (m *Manager) TouchActivity(ctx context.Context, userID string) error {
 
 func (m *Manager) SetWSConnections(ctx context.Context, userID string, n int) error {
 	return m.store.SetWSConnections(ctx, userID, n)
+}
+
+// GatewayWSURL 返回 backend 流式转发时连接 gateway 的 WS 地址。
+func (m *Manager) GatewayWSURL(userID string) string {
+	if m.gateway == nil {
+		return ""
+	}
+	return m.gateway.WSUpstreamURL(userID)
 }
 
 func (m *Manager) failInstance(ctx context.Context, userID string, inst *models.Instance, err error) (*models.Instance, error) {
