@@ -326,6 +326,7 @@ function AgentPanel(props: {
     try {
       await api.setModels(adminToken, agent.user_id, cfg)
       await loadModels()
+      setShowModels(false) // 保存成功后收起配置表单
     } catch (e) {
       onError((e as Error).message)
     }
