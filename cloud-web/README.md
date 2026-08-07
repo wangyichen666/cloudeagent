@@ -15,7 +15,7 @@ npm run dev        # http://localhost:5173
 可用环境变量 `VITE_API_BASE` 覆盖。backend 在 kind 集群内时先：
 
 ```bash
-kubectl port-forward -n cloude-control svc/control-plane-svc 18080:8080
+kubectl port-forward -n cloude-backend svc/control-plane-svc 18080:8080
 ```
 
 登录后填入管理 Token（默认 `dev-admin-token`）即可使用。

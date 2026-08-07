@@ -153,7 +153,7 @@ npm run dev        # http://localhost:5173
 
 开发代理把 `/v1` 转发到 `http://127.0.0.1:18080`（backend 控制面，可用
 `VITE_API_BASE` 覆盖）；backend 在 kind 集群内时先 `kubectl port-forward -n
-cloude-control svc/control-plane-svc 18080:8080`。
+cloude-backend svc/control-plane-svc 18080:8080`。
 
 ## API 速览（完整见 [docs/api.md](docs/api.md)）
 

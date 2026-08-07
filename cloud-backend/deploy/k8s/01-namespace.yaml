@@ -9,6 +9,6 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: cloude-control
+  name: cloude-backend
   labels:
-    name: cloude-control
+    name: cloude-backend
