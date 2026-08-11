@@ -1,0 +1,16 @@
+# Binaries
+/bin/
+
+# Local dev
+.env
+.DS_Store
+coverage.out
+.idea/
+
+# Go
+go.work
+*.test
+
+# Docker / runtime
+*.log
+*.pid

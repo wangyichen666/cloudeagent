@@ -109,8 +109,43 @@ agent-runtime ──(ACP stdio JSON-RPC)──> qwenpaw acp（QwenPaw 2.x 内核
   原有零依赖 demo 不受影响。
 
 Docker 镜像（`agent-image/Dockerfile`）已内置 QwenPaw（Python 运行时阶段
-`pip install qwenpaw`），构建时间较长、镜像体积较大属预期；本地进程后端用
-`QPW_BIN` 指向宿主已安装的 qwenpaw 即可。
+`pip install qwenpaw`，默认固定 **2.0.1**，可用 `--build-arg QPW_VERSION=<版本>` 覆盖），
+构建时间较长、镜像体积较大属预期；本地进程后端用 `QPW_BIN` 指向宿主已安装的 qwenpaw 即可。
+
+### 本地镜像仓库（存放最新镜像）
+
+`scripts/` 提供两个脚本，把「构建 → 推送 → 拉取」固化成一条命令：
+
+```bash
+cd cloud-backend
+./scripts/registry.sh        # 1) 启动本地 registry（127.0.0.1:5001）+ 推送 cloude 三件套镜像
+```
+
+`registry.sh` 会启动一个 `registry:2` 容器（`cloude-registry`，`--restart unless-stopped`，
+映射到 **5001** 端口——5000 常被系统服务占用），然后把本机的
+`cloude-control:local` / `cloude-gateway:local` / `cloude-agent:local` 推入，仓库地址：
+
+```
+localhost:5001/cloude-agent:2.0.1   localhost:5001/cloude-agent:latest
+localhost:5001/cloude-control:latest
+localhost:5001/cloude-gateway:latest
+```
+
+只重建 agent 镜像（或换 qwenpaw 版本）时用：
+
+```bash
+REGISTRY=localhost:5001 ./scripts/agent-image.sh          # qwenpaw 默认 2.0.1
+QPW_VERSION=2.0.1 REGISTRY=localhost:5001 ./scripts/agent-image.sh
+```
+
+控制面使用仓库镜像（Docker 后端）：
+
+```bash
+./bin/control-plane --backend docker --agent-image localhost:5001/cloude-agent:latest ...
+```
+
+K8s 节点从该仓库拉镜像时，需在 containerd/docker 里把 registry 配为 insecure
+（或按生产选型换成 Harbor 等带鉴权的私有仓库）。
 
 ## 三种运行模式
 
@@ -200,6 +235,8 @@ deploy/k8s/               命名空间 / Headless Service / NetworkPolicy / RBAC
 migrations/001_init.sql   状态面表结构（对应文档数据模型）
 scripts/demo.sh           一键演示
 scripts/dev.sh            Docker 后端开发模式
+scripts/agent-image.sh    构建（并可选推送）agent 镜像，qwenpaw 默认 2.0.1
+scripts/registry.sh       启动本地 registry 并推送 cloude 三件套镜像
 scripts/ws-demo.js        WebSocket 流式会话演示
 ```
 
@@ -225,7 +262,7 @@ cd k8sbackend && go build -o ../bin/control-plane-k8s ./cmd/control-plane
   --redis-addr 10.0.0.8:6379
 ```
 
-集群侧清单见 `deploy/k8s/`：命名空间隔离、Headless Service、NetworkPolicy、RBAC、Secret 占位。实例镜像用 `docker build -f agent-image/Dockerfile -t cloude-agent:local .` 构建后推送到私有仓库（文档选型 Harbor）。
+集群侧清单见 `deploy/k8s/`：命名空间隔离、Headless Service、NetworkPolicy、RBAC、Secret 占位。实例镜像用 `docker build -f agent-image/Dockerfile -t cloude-agent:local .` 构建后推送到私有仓库（本地开发可直接用 `./scripts/registry.sh` 推送到 127.0.0.1:5001，生产选型 Harbor）。
 
 ## 文档
 

@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 step "构建 agent 实例镜像 cloude-agent:local"
-docker build -q -f agent-image/Dockerfile -t cloude-agent:local .
+QPW_VERSION="${QPW_VERSION:-2.0.1}"
+docker build -q --build-arg "QPW_VERSION=${QPW_VERSION}" -f agent-image/Dockerfile -t cloude-agent:local .
 
 step "构建控制面"
 mkdir -p bin

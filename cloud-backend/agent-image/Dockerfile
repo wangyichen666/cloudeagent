@@ -12,7 +12,9 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/agent-runtime ./cmd/agent-ru
 FROM python:3.12-slim
 # QwenPaw ACP 内核（pip 需要网络；构建时间会较长，镜像体积较大）。
 # 构建产物体积与依赖说明见 README「QwenPaw 内核接入」。
-ARG QPW_VERSION=latest
+# 默认固定到 >=2.0 的稳定版本（ACP --runtime-provider 需要 >=2.0）；
+# 需要其他版本时用 --build-arg QPW_VERSION=<版本> 覆盖。
+ARG QPW_VERSION=2.0.1
 RUN if [ "$QPW_VERSION" = "latest" ]; then \
         pip install --no-cache-dir qwenpaw; \
     else \
