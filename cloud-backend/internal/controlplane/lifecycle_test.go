@@ -9,20 +9,20 @@ import (
 	"cloude-agent/internal/store"
 )
 
-func newTestManager(t *testing.T, bk *fakeBackend) (*Manager, *store.Memory) {
+func newTestManager(t *testing.T, bk *FakeSandbox) (*Manager, *store.Memory) {
 	t.Helper()
 	st := store.NewMemory()
 	cfgCache := store.NewMemoryCache(time.Hour)
 	seats := NewMockSeatService()
-	return NewManager(st, cfgCache, bk, seats, newStubGateway()), st
+	return NewManager(st, cfgCache, bk, seats, NewStubGateway()), st
 }
 
 func TestLifecycleStateMachine(t *testing.T) {
 	ctx := context.Background()
-	bk := newFakeBackend()
-	agent := fakeAgentServer(t)
+	bk := NewFakeSandbox()
+	agent := FakeAgentServer(t)
 	defer agent.Close()
-	bk.setEndpoint("u-1001", agent.URL)
+	bk.SetEndpoint("u-1001", agent.URL)
 
 	mgr, st := newTestManager(t, bk)
 
@@ -34,7 +34,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if inst.Status != domain.StatusRunning {
 		t.Fatalf("期望 running，实际 %s", inst.Status)
 	}
-	if !bk.hasCall("create:u-1001") {
+	if !bk.HasCall("create:u-1001") {
 		t.Fatal("后端未收到 create 调用")
 	}
 
@@ -60,7 +60,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if inst.Status != domain.StatusSuspended {
 		t.Fatalf("期望 suspended，实际 %s", inst.Status)
 	}
-	if !bk.hasCall("stop:u-1001") {
+	if !bk.HasCall("stop:u-1001") {
 		t.Fatal("后端未收到 stop 调用")
 	}
 	if _, err := mgr.cache.Get(ctx, "u-1001"); err == nil {
@@ -75,7 +75,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if inst.Status != domain.StatusRunning {
 		t.Fatalf("期望 running，实际 %s", inst.Status)
 	}
-	if !bk.hasCall("start:u-1001") {
+	if !bk.HasCall("start:u-1001") {
 		t.Fatal("后端未收到 start 调用")
 	}
 	// 唤醒后应可从席位服务重新解析配置
@@ -104,7 +104,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 
 func TestSuspendRequiresRunning(t *testing.T) {
 	ctx := context.Background()
-	bk := newFakeBackend()
+	bk := NewFakeSandbox()
 	mgr, _ := newTestManager(t, bk)
 	if _, err := mgr.Suspend(ctx, "u-404"); err == nil {
 		t.Fatal("不存在的实例休眠应报错")
@@ -113,10 +113,10 @@ func TestSuspendRequiresRunning(t *testing.T) {
 
 func TestModelHotSwitch(t *testing.T) {
 	ctx := context.Background()
-	bk := newFakeBackend()
-	agent := fakeAgentServer(t)
+	bk := NewFakeSandbox()
+	agent := FakeAgentServer(t)
 	defer agent.Close()
-	bk.setEndpoint("u-2002", agent.URL)
+	bk.SetEndpoint("u-2002", agent.URL)
 
 	mgr, _ := newTestManager(t, bk)
 	if _, err := mgr.Create(ctx, "u-2002"); err != nil {

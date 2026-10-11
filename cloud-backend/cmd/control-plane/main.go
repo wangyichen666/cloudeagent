@@ -25,7 +25,6 @@ import (
 
 	apicp "cloude-agent/internal/api/controlplane"
 	"cloude-agent/internal/controlplane"
-	"cloude-agent/internal/gateway"
 	"cloude-agent/internal/sandbox"
 	sandboxDocker "cloude-agent/internal/sandbox/docker"
 	sandboxE2B "cloude-agent/internal/sandbox/e2b"
@@ -156,7 +155,7 @@ func main() {
 	seats.APIKey = *apiKey
 	seats.Models = splitModels(*modelList)
 
-	manager := controlplane.NewManager(st, cache, bk, seats, gateway.New(*gatewayURL))
+	manager := controlplane.NewManager(st, cache, bk, seats, controlplane.NewGatewayClient(*gatewayURL))
 	reaper := controlplane.NewReaper(manager, *idleTimeout, *reapInterval)
 	reviewWorker := controlplane.NewReviewWorker(st, manager.GetModelConfig)
 	auth := apicp.NewAuthenticator(*namespace, *adminToken)

@@ -14,13 +14,13 @@ import (
 )
 
 func TestServerEndToEnd(t *testing.T) {
-	bk := newFakeBackend()
-	agent := fakeAgentServer(t)
+	bk := app.NewFakeSandbox()
+	agent := app.FakeAgentServer(t)
 	defer agent.Close()
-	bk.setEndpoint("u-3001", agent.URL)
+	bk.SetEndpoint("u-3001", agent.URL)
 
 	st := store.NewMemory()
-	manager := app.NewManager(st, store.NewMemoryCache(time.Hour), bk, app.NewMockSeatService(), newStubGateway())
+	manager := app.NewManager(st, store.NewMemoryCache(time.Hour), bk, app.NewMockSeatService(), app.NewStubGateway())
 	reaper := app.NewReaper(manager, 0, time.Minute)
 	review := app.NewReviewWorker(st, manager.GetModelConfig)
 	auth := NewAuthenticator("cloude-agent", "admin-token")
