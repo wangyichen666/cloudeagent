@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,31 +10,33 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"cloude-agent/internal/engine"
 )
 
 // Daemon 是 Agent 实例运行时：提供健康检查、配置热加载、
-// REST 聊天与 WebSocket 流式会话。端口约定 18585（与文档一致）。
+// REST 聊天与 WebSocket 流式会话。端口约定 18585。
 type Daemon struct {
-	cfg      *ConfigManager
+	cfg      *engine.ConfigManager
 	session  *Session
 	upgrader websocket.Upgrader
 	started  time.Time
 }
 
-// NewDaemon 创建实例运行时。acpBin 为 QwenPaw ACP 内核可执行文件
-// （qwenpaw）；留空或不可用则自动回退 mock LLM。
-func NewDaemon(workspace string, configFile string, acpBin string) (*Daemon, error) {
-	cfg := NewConfigManager(configFile, func(c *RuntimeConfig) {
+// NewDaemon 创建实例运行时。
+// engineName 指定首选引擎（如 "qwenpaw"）；为空则默认 qwenpaw，不可用回退 mock。
+func NewDaemon(workspace, configFile, engineName string) (*Daemon, error) {
+	cfg := engine.NewConfigManager(configFile, func(c *engine.Config) {
 		log.Printf("[agent] 模型配置热加载: model=%s provider=%s", c.Model, c.Provider)
 	})
-	session, err := NewSession(workspace, cfg, acpBin)
+	session, err := NewSession(workspace, engineName, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("init session: %w", err)
+		return nil, err
 	}
 	return &Daemon{
-		cfg:      cfg,
-		session:  session,
-		started:  time.Now(),
+		cfg:     cfg,
+		session: session,
+		started: time.Now(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
 	}, nil
 }
@@ -78,14 +79,12 @@ func (d *Daemon) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleSetConfig(w http.ResponseWriter, r *http.Request) {
-	var cfg RuntimeConfig
+	var cfg engine.Config
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	applied := d.cfg.Apply(&cfg)
-	// 模型/凭证变化立即同步到 ACP 内核（凭证差异 → 重启子进程注入新环境）。
-	// 异步执行避免阻塞 HTTP 响应；重启期间旧会话保持，新请求自动等待。
 	go d.session.SyncConfig(context.Background())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
@@ -133,8 +132,6 @@ func (d *Daemon) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHistory 返回持久化的对话历史（保存于工作区 .agent/conversation.jsonl，
-// 休眠/唤醒不丢失）。limit 默认 100，0 表示全部。
 func (d *Daemon) handleHistory(w http.ResponseWriter, r *http.Request) {
 	limit := 100
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -154,7 +151,6 @@ func (d *Daemon) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleNewSession 让 QwenPaw 真实开启一个新会话（session/new + 关闭旧会话）。
 func (d *Daemon) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := d.session.NewSession(r.Context())
 	if err != nil {
@@ -167,16 +163,12 @@ func (d *Daemon) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetSession 返回当前活动会话（前端展示/续接用）。
 func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id": d.session.ActiveSession(),
 	})
 }
 
-// handleSessionWS 是流式会话：客户端发送 {"type":"chat","message":...}，
-// 服务端回 {"type":"delta"/"thought"/"tool_call"/"usage"/"error",...}，
-// 最后 {"type":"done",...}。真实 ACP 内核逐增量转发，mock 分片模拟。
 func (d *Daemon) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := d.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -213,23 +205,9 @@ func (d *Daemon) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Close 停止 ACP 子进程（实例退出时调用，保证子进程不残留）。
+// Close 停止引擎（实例退出时调用）。
 func (d *Daemon) Close() {
 	d.session.Close()
-	d.cfg.Close()
-}
-
-func chunkText(s string, n int) []string {
-	runes := []rune(s)
-	var out []string
-	for len(runes) > 0 {
-		if len(runes) < n {
-			n = len(runes)
-		}
-		out = append(out, string(runes[:n]))
-		runes = runes[n:]
-	}
-	return out
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

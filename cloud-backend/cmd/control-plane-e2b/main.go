@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
-	"cloude-agent/internal/backend"
 	"cloude-agent/internal/controlplane"
 	"cloude-agent/internal/gateway"
+	sandboxE2B "cloude-agent/internal/sandbox/e2b"
 	"cloude-agent/internal/store"
 )
 
@@ -87,19 +87,19 @@ func main() {
 		cache = store.NewMemoryCache(24 * time.Hour)
 	}
 
-	// ---- E2B 数据面 ----
-	bk, err := backend.NewE2B(backend.E2BConfig{
+	// ---- E2B 沙箱提供方 ----
+	bk, err := sandboxE2B.New(sandboxE2B.Config{
 		APIURL:         *e2bAPIURL,
 		SandboxBaseURL: *e2bSbxBase,
 		APIKey:         *e2bAPIKey,
 		Scheme:         "http",
 		Template:       *e2bTemplate,
-		TimeoutSec:      int32(*e2bTimeout),
+		TimeoutSec:     int32(*e2bTimeout),
 		AgentPort:      18585,
-		WaitReady:       *e2bWaitReady,
+		WaitReady:      *e2bWaitReady,
 	})
 	if err != nil {
-		log.Fatalf("e2b backend: %v", err)
+		log.Fatalf("e2b provider: %v", err)
 	}
 
 	// 启动恢复：从 Store 读已有实例，重建 userID->sandboxID 映射

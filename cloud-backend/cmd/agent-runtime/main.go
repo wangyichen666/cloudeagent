@@ -16,7 +16,8 @@ func main() {
 		listen     = flag.String("listen", "127.0.0.1:18585", "监听地址")
 		workspace  = flag.String("workspace", "./data/workspaces/default", "持久化工作区目录")
 		configFile = flag.String("config-file", "", "运行时配置文件（可选，watch 热重载；默认仅内存）")
-		qwenpawBin = flag.String("qwenpaw-bin", "", "QwenPaw ACP 内核可执行文件路径（默认取 QWENPAW_BIN 环境变量，再回退 qwenpaw；不可用则回退 mock LLM）")
+		engineName = flag.String("engine", "", "Agent 引擎名称（qwenpaw / mock；默认 qwenpaw，不可用回退 mock）")
+		qwenpawBin = flag.String("qwenpaw-bin", "", "【已废弃，用 --engine】QwenPaw ACP 内核可执行文件路径")
 	)
 	flag.Parse()
 
@@ -24,15 +25,22 @@ func main() {
 		log.Fatalf("mkdir workspace: %v", err)
 	}
 
-	kernelBin := *qwenpawBin
-	if kernelBin == "" {
-		kernelBin = os.Getenv("QWENPAW_BIN")
+	// 兼容旧参数：--qwenpaw-bin 非空时引擎名取其路径
+	eng := *engineName
+	if eng == "" && *qwenpawBin != "" {
+		eng = *qwenpawBin
 	}
-	if kernelBin == "" {
-		kernelBin = "qwenpaw"
+	if eng == "" {
+		if v := os.Getenv("AGENT_ENGINE"); v != "" {
+			eng = v
+		} else if v := os.Getenv("QWENPAW_BIN"); v != "" {
+			eng = v
+		} else {
+			eng = "qwenpaw"
+		}
 	}
 
-	daemon, err := agent.NewDaemon(*workspace, *configFile, kernelBin)
+	daemon, err := agent.NewDaemon(*workspace, *configFile, eng)
 	if err != nil {
 		log.Fatalf("init agent: %v", err)
 	}
@@ -43,7 +51,7 @@ func main() {
 		ReadHeaderTimeout: 10 * 1e9,
 	}
 	go func() {
-		log.Printf("[agent-runtime] listening on %s workspace=%s qwenpaw-bin=%s", *listen, *workspace, kernelBin)
+		log.Printf("[agent-runtime] listening on %s workspace=%s engine=%s", *listen, *workspace, eng)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}

@@ -1,4 +1,5 @@
-package backend
+// Package docker 是本地容器沙箱提供方：每用户一个容器 + 命名卷。
+package docker
 
 import (
 	"context"
@@ -6,40 +7,37 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+
+	"cloude-agent/internal/sandbox"
 )
 
-// DockerConfig 配置 Docker 容器后端。
-type DockerConfig struct {
-	Image                 string // 如 cloude-agent:local
-	RemoveVolumeOnDelete  bool   // 删除实例时是否同时删除命名卷（对应 PVC）
+// Config 配置 Docker 容器后端。
+type Config struct {
+	Image                string // 如 cloude-agent:local
+	RemoveVolumeOnDelete bool   // 删除时是否同时删除命名卷
 }
 
-// Docker 后端：每用户一个容器 + 一个命名卷。
-// 这是本地开发中最接近「StatefulSet + PVC」的语义：
-//   - 容器名/卷名稳定，路由端口在容器重启后不变；
-//   - 休眠 = docker stop（容器删除但卷保留），唤醒 = docker start。
-// 注意：凭证不写进卷，仅通过控制面 HTTP 注入内存（文档 6.2）。
-type Docker struct {
-	cfg DockerConfig
+// Provider 实现 sandbox.Provider。
+type Provider struct {
+	cfg Config
 }
 
-func NewDocker(cfg DockerConfig) (*Docker, error) {
+func New(cfg Config) (*Provider, error) {
 	if cfg.Image == "" {
-		return nil, fmt.Errorf("docker backend: Image 未配置")
+		return nil, fmt.Errorf("docker provider: Image 未配置")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
-		return nil, fmt.Errorf("docker backend: 未找到 docker: %w", err)
+		return nil, fmt.Errorf("docker provider: 未找到 docker: %w", err)
 	}
-	return &Docker{cfg: cfg}, nil
+	return &Provider{cfg: cfg}, nil
 }
 
-func (d *Docker) Name() string { return "docker" }
+func (d *Provider) Name() string { return "docker" }
 
-func (d *Docker) containerName(userID string) string { return "cloude-agent-" + userID }
-func (d *Docker) volumeName(userID string) string     { return "cloude-agent-vol-" + userID }
+func (d *Provider) containerName(userID string) string { return "cloude-agent-" + userID }
+func (d *Provider) volumeName(userID string) string    { return "cloude-agent-vol-" + userID }
 
-func (d *Docker) Create(ctx context.Context, userID string) (*Info, error) {
-	// 幂等：容器已存在则直接 Start。
+func (d *Provider) Create(ctx context.Context, userID string) (*sandbox.Info, error) {
 	args := []string{"run", "-d", "--name", d.containerName(userID),
 		"-v", d.volumeName(userID) + ":/workspace",
 		"-e", "CLOUDE_WORKSPACE=/workspace",
@@ -48,7 +46,6 @@ func (d *Docker) Create(ctx context.Context, userID string) (*Info, error) {
 		d.cfg.Image,
 	}
 	if _, err := runDocker(ctx, args...); err != nil {
-		// 容器名冲突说明已存在 → 唤醒路径
 		if strings.Contains(err.Error(), "Conflict") || strings.Contains(err.Error(), "already in use") {
 			return d.Start(ctx, userID)
 		}
@@ -57,17 +54,17 @@ func (d *Docker) Create(ctx context.Context, userID string) (*Info, error) {
 	return d.startInfo(ctx, userID)
 }
 
-func (d *Docker) Start(ctx context.Context, userID string) (*Info, error) {
+func (d *Provider) Start(ctx context.Context, userID string) (*sandbox.Info, error) {
 	_, _ = runDocker(ctx, "start", d.containerName(userID))
 	return d.startInfo(ctx, userID)
 }
 
-func (d *Docker) Stop(ctx context.Context, userID string) error {
+func (d *Provider) Stop(ctx context.Context, userID string) error {
 	_, err := runDocker(ctx, "stop", "--time", "5", d.containerName(userID))
 	return err
 }
 
-func (d *Docker) Delete(ctx context.Context, userID string) error {
+func (d *Provider) Delete(ctx context.Context, userID string) error {
 	args := []string{"rm", "-f", d.containerName(userID)}
 	if d.cfg.RemoveVolumeOnDelete {
 		args = append(args, "-v")
@@ -76,12 +73,11 @@ func (d *Docker) Delete(ctx context.Context, userID string) error {
 	return err
 }
 
-func (d *Docker) startInfo(ctx context.Context, userID string) (*Info, error) {
+func (d *Provider) startInfo(ctx context.Context, userID string) (*sandbox.Info, error) {
 	out, err := runDocker(ctx, "port", d.containerName(userID), "18585")
 	if err != nil {
 		return nil, err
 	}
-	// 输出形如 "127.0.0.1:54321"
 	addr := strings.TrimSpace(out)
 	host, portStr, ok := strings.Cut(addr, ":")
 	if !ok {
@@ -91,7 +87,7 @@ func (d *Docker) startInfo(ctx context.Context, userID string) (*Info, error) {
 	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
 		return nil, fmt.Errorf("解析端口失败: %q", portStr)
 	}
-	return &Info{
+	return &sandbox.Info{
 		UserID:    userID,
 		Workspace: d.volumeName(userID),
 		Endpoint:  fmt.Sprintf("http://%s:%d", host, port),

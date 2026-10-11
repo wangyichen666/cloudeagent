@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	"cloude-agent/internal/backend"
 	"cloude-agent/internal/models"
+	"cloude-agent/internal/sandbox"
 )
 
 // fakeBackend 是数据面的替身：不启动真实进程，记录调用序列供断言。
@@ -36,14 +36,14 @@ func (f *fakeBackend) setEndpoint(userID, endpoint string) {
 	f.endpoints[userID] = endpoint
 }
 
-func (f *fakeBackend) Create(ctx context.Context, userID string) (*backend.Info, error) {
+func (f *fakeBackend) Create(ctx context.Context, userID string) (*sandbox.Info, error) {
 	f.record("create:" + userID)
-	return &backend.Info{Workspace: "/fake/" + userID, Endpoint: f.endpoints[userID], Port: 1}, nil
+	return &sandbox.Info{Workspace: "/fake/" + userID, Endpoint: f.endpoints[userID], Port: 1}, nil
 }
 
-func (f *fakeBackend) Start(ctx context.Context, userID string) (*backend.Info, error) {
+func (f *fakeBackend) Start(ctx context.Context, userID string) (*sandbox.Info, error) {
 	f.record("start:" + userID)
-	return &backend.Info{Workspace: "/fake/" + userID, Endpoint: f.endpoints[userID], Port: 1}, nil
+	return &sandbox.Info{Workspace: "/fake/" + userID, Endpoint: f.endpoints[userID], Port: 1}, nil
 }
 
 func (f *fakeBackend) Stop(ctx context.Context, userID string) error {

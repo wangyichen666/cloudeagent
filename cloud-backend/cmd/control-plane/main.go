@@ -10,9 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"cloude-agent/internal/backend"
 	"cloude-agent/internal/controlplane"
 	"cloude-agent/internal/gateway"
+	"cloude-agent/internal/sandbox"
+	sandboxDocker "cloude-agent/internal/sandbox/docker"
+	sandboxProcess "cloude-agent/internal/sandbox/process"
 	"cloude-agent/internal/store"
 )
 
@@ -77,17 +79,17 @@ func main() {
 		cache = store.NewMemoryCache(24 * time.Hour)
 	}
 
-	// ---- 数据面 ----
-	var bk backend.InstanceBackend
+	// ---- 沙箱提供方 ----
+	var bk sandbox.Provider
 	switch *backendTyp {
 	case "process":
-		bk, err = backend.NewProcess(backend.ProcessConfig{
+		bk, err = sandboxProcess.New(sandboxProcess.Config{
 			AgentBin:              *agentBin,
 			DataDir:               *dataDir,
 			KeepWorkspaceOnDelete: false,
 		})
 	case "docker":
-		bk, err = backend.NewDocker(backend.DockerConfig{
+		bk, err = sandboxDocker.New(sandboxDocker.Config{
 			Image:                *agentImage,
 			RemoveVolumeOnDelete: *removeVolume,
 		})
@@ -95,7 +97,7 @@ func main() {
 		log.Fatalf("未知 backend: %s", *backendTyp)
 	}
 	if err != nil {
-		log.Fatalf("init backend: %v", err)
+		log.Fatalf("init sandbox provider: %v", err)
 	}
 
 	// ---- 席位服务（身份 -> 模型配置） ----

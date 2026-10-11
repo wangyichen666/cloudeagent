@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"cloude-agent/internal/backend"
 	"cloude-agent/internal/models"
+	"cloude-agent/internal/sandbox"
 	"cloude-agent/internal/store"
 )
 
@@ -33,14 +33,14 @@ type AgentGateway interface {
 type Manager struct {
 	store         store.Store
 	cache         store.ModelConfigCache
-	backend       backend.InstanceBackend
+	backend       sandbox.Provider
 	seats         SeatService
 	gateway       AgentGateway
 	injectTimeout time.Duration
-	mu            sync.Mutex // 串行化单实例的状态迁移（本地等价于 Redis 分布式锁）
+	mu            sync.Mutex
 }
 
-func NewManager(store store.Store, cache store.ModelConfigCache, bk backend.InstanceBackend, seats SeatService, gw AgentGateway) *Manager {
+func NewManager(store store.Store, cache store.ModelConfigCache, bk sandbox.Provider, seats SeatService, gw AgentGateway) *Manager {
 	return &Manager{
 		store:         store,
 		cache:         cache,
@@ -64,7 +64,7 @@ func (m *Manager) registerGateway(ctx context.Context, userID, endpoint string) 
 
 // Create 对应状态机 None -> Running：创建后端资源 -> 等 Ready -> 注入模型配置。
 func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, error) {
-	if err := backend.ValidateUserID(userID); err != nil {
+	if err := sandbox.ValidateUserID(userID); err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
@@ -95,7 +95,7 @@ func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, 
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	inst.Workspace, inst.Endpoint, inst.Port = info.Workspace, info.Endpoint, info.Port
-	if err := backend.WaitHealth(ctx, inst.Endpoint, 60*time.Second); err != nil {
+	if err := sandbox.WaitHealth(ctx, inst.Endpoint, 60*time.Second); err != nil {
 		_ = m.backend.Delete(ctx, userID)
 		return m.failInstance(ctx, userID, inst, err)
 	}
@@ -162,7 +162,7 @@ func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *models.In
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	inst.Workspace, inst.Endpoint, inst.Port = info.Workspace, info.Endpoint, info.Port
-	if err := backend.WaitHealth(ctx, inst.Endpoint, 60*time.Second); err != nil {
+	if err := sandbox.WaitHealth(ctx, inst.Endpoint, 60*time.Second); err != nil {
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	m.registerGateway(ctx, userID, inst.Endpoint)
@@ -210,7 +210,7 @@ func (m *Manager) Get(ctx context.Context, userID string) (*models.Instance, err
 // Seed 把启动时发现的后端实例登记进状态存储（幂等）：
 // 控制面重启后（内存模式）自动恢复已有实例，避免 Pod 在跑但列表为空。
 // 模型凭证仍遵守「不落盘」设计：不在此恢复，唤醒时由席位/前端重新注入。
-func (m *Manager) Seed(ctx context.Context, infos []backend.Info) error {
+func (m *Manager) Seed(ctx context.Context, infos []sandbox.Info) error {
 	for _, info := range infos {
 		if info.UserID == "" {
 			continue

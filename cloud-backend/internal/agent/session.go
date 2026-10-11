@@ -6,126 +6,74 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"cloude-agent/internal/engine"
 	"cloude-agent/internal/models"
 )
 
-// Session 管理每个实例的工作区会话：
-// 对话历史持久化在 workspace/.agent/conversation.jsonl，
-// 休眠再唤醒后数据不丢（对应文档「有状态」诉求，PVC 语义的本地实现）。
-type Session struct {
-	workspace string
-	cfg       *ConfigManager
-	acp       *ACPServer
-	acpBin    string
-	mu        sync.Mutex
-	promptMu  sync.Mutex // 单用户实例：串行化 prompt，避免同一会话交错
-	activeSess string     // 当前 ACP 会话 key（新建会话后更新）
-
-	probeOnce sync.Once
-	probeVer  string
-	probeErr  error
+// ChatRequest 是会话输入。
+type ChatRequest struct {
+	Message   string `json:"message"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
-// NewSession 创建会话。acpBin 为 qwenpaw 可执行文件路径（空串 = 禁用 ACP 内核，
-// 纯 mock 回退；非空但找不到文件同样回退 mock）。
-func NewSession(workspace string, cfg *ConfigManager, acpBin string) (*Session, error) {
+// Session 管理每个实例的工作区会话：
+// 对话历史持久化在 workspace/.agent/conversation.jsonl，
+// 休眠再唤醒后数据不丢。
+//
+// 引擎通过 engine.Engine 接口抽象：优先使用配置的真实引擎（如 qwenpaw），
+// 不可用时自动回退到 mock 引擎。
+type Session struct {
+	workspace string
+	cfg       *engine.ConfigManager
+	eng       engine.Engine // 当前活跃引擎（qwenpaw 或 mock）
+	engName   string        // 引擎名称（用于日志/可观测）
+	mu        sync.Mutex
+	promptMu  sync.Mutex // 单用户实例：串行化 prompt
+}
+
+// NewSession 创建会话。
+// engineName 指定首选引擎（如 "qwenpaw"）；为空或不可用时自动回退 mock。
+func NewSession(workspace, engineName string, cfg *engine.ConfigManager) (*Session, error) {
 	dir := filepath.Join(workspace, ".agent")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return &Session{
+	s := &Session{
 		workspace: workspace,
 		cfg:       cfg,
-		acpBin:    acpBin,
-		acp:       NewACPServer(acpBin, workspace, cfg),
-		activeSess: "default",
-	}, nil
+	}
+	s.eng, s.engName = s.buildEngine(engineName)
+	return s, nil
 }
 
-// AcpReady 报告 QwenPaw ACP 内核是否可用：
-// 需要可执行文件存在 + 已配置真实模型端点（非 mock）。
-func (s *Session) AcpReady() (bool, string) {
-	if s.acpBin == "" {
-		return false, "未配置 qwenpaw 可执行文件（--qwenpaw-bin）"
+// buildEngine 按名称创建引擎，失败则回退 mock。
+func (s *Session) buildEngine(name string) (engine.Engine, string) {
+	if name == "" {
+		name = "qwenpaw"
 	}
-	if _, err := exec.LookPath(s.acpBin); err != nil {
-		if _, statErr := os.Stat(s.acpBin); statErr != nil {
-			return false, fmt.Sprintf("找不到 qwenpaw 可执行文件 %s", s.acpBin)
-		}
+	eng, err := engine.New(name, s.workspace, s.cfg.Get())
+	if err != nil {
+		log.Printf("[session] 引擎 %s 创建失败，回退 mock: %v", name, err)
+		mockEng, _ := engine.New("mock", s.workspace, s.cfg.Get())
+		return mockEng, "mock"
 	}
-	ver, verErr := s.qwenpawVersion()
-	if verErr != nil {
-		return false, fmt.Sprintf("qwenpaw 版本探测失败: %v", verErr)
-	}
-	// 仅在能明确解析出版本且主版本 <2 时拦截；未知格式不误伤
-	// （wrapper/别名脚本可能不响应 --version，让 ACP 握手给出真实错误）。
-	if major, _ := versionMajorMinor(ver); major > 0 && major < 2 {
-		return false, fmt.Sprintf(
-			"qwenpaw 版本过低（当前 %s，ACP --runtime-provider 需要 >=2.0），请升级：pip install -U qwenpaw",
-			ver)
-	}
-	cfg := s.cfg.Get()
-	if cfg.BaseURL == "" || strings.HasPrefix(cfg.BaseURL, "mock://") {
-		return false, "模型配置为 mock（设置真实 base_url 后启用 ACP 内核）"
-	}
-	return true, ""
+	return eng, name
 }
 
-// qwenpawVersion 探测一次并缓存 `qwenpaw --version` 输出。
-func (s *Session) qwenpawVersion() (string, error) {
-	s.probeOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, s.acpBin, "--version").CombinedOutput()
-		if err != nil {
-			// 某些版本把版本号打在 stderr 或非零退出；尝试宽松解析。
-			s.probeErr = err
-			s.probeVer = strings.TrimSpace(string(out))
-			if s.probeVer == "" {
-				s.probeErr = fmt.Errorf("qwenpaw --version 失败: %w", err)
-				return
-			}
-			s.probeErr = nil
-			return
-		}
-		s.probeVer = strings.TrimSpace(string(out))
-	})
-	if s.probeErr != nil {
-		return s.probeVer, s.probeErr
-	}
-	return s.probeVer, nil
-}
-
-// versionMajorMinor 从 "QwenPaw, version 2.0.4" 这类输出解析主版本号。
-func versionMajorMinor(ver string) (int, int) {
-	major, minor := 0, 0
-	for _, part := range strings.FieldsFunc(ver, func(r rune) bool {
-		return r == '.' || r == ' ' || r == ',' || r == '-'
-	}) {
-		var n int
-		if _, err := fmt.Sscanf(part, "%d", &n); err == nil {
-			if major == 0 {
-				major = n
-				continue
-			}
-			minor = n
-			return major, minor
-		}
-	}
-	return major, minor
+// EngineReady 报告当前引擎是否可用。
+func (s *Session) EngineReady() (bool, string) {
+	return s.eng.Ready()
 }
 
 func (s *Session) LogPath() string {
 	return filepath.Join(s.workspace, ".agent", "conversation.jsonl")
 }
 
-// MessageIndex 返回已持久化的消息条数（从 1 开始计数）。
 func (s *Session) MessageIndex() (int, error) {
 	data, err := os.ReadFile(s.LogPath())
 	if err != nil {
@@ -177,43 +125,29 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 
 	var reply string
 	var mock bool
-	if ready, reason := s.AcpReady(); ready {
-		var sb strings.Builder
-		filter := newHeadlineLineFilter(func(text string) { _, _ = sb.WriteString(text) })
-		handler := UpdateHandlerFunc(func(u map[string]any) {
-			if kind, _ := u["sessionUpdate"].(string); kind == acpUpdateKindMessage {
-				if c, ok := u["content"].(map[string]any); ok {
-					if text, ok := c["text"].(string); ok {
-						filter.Write(text)
-					}
-				}
-			}
-		})
-		s.promptMu.Lock()
-		_, err = s.acp.Prompt(ctx, key, req.Message, handler)
-		s.promptMu.Unlock()
-		if err != nil {
-			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
-			return nil, err
+
+	// 引擎不可用时自动切换到 mock（保持实例可用）
+	if ready, reason := s.eng.Ready(); !ready {
+		if s.engName != "mock" {
+			log.Printf("[session] 引擎 %s 不可用，回退 mock: %s", s.engName, reason)
+			mockEng, _ := engine.New("mock", s.workspace, cfg)
+			s.eng = mockEng
+			s.engName = "mock"
 		}
-		filter.Flush()
-		reply = stripHeadlineText(sb.String())
-		if reply == "" {
-			reply = "（QwenPaw 未产生文本回复，请查看工具调用/工作区状态）"
-		}
-	} else {
-		// mock 回退：零外部依赖可用；同时保留诊断信息。
-		if !strings.HasPrefix(cfg.BaseURL, "mock://") {
-			log.Printf("[session] ACP 内核不可用，回退 mock: %s", reason)
-		}
-		llm := NewLLM(cfg)
-		reply, err = llm.Complete(ctx, cfg, req.Message)
-		if err != nil {
-			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
-			return nil, err
-		}
-		mock = llm.Name() == "mock"
 	}
+
+	s.promptMu.Lock()
+	reply, err = s.eng.Chat(ctx, key, req.Message, nil)
+	s.promptMu.Unlock()
+	if err != nil {
+		_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
+		return nil, err
+	}
+	if reply == "" && s.engName == "qwenpaw" {
+		reply = "（引擎未产生文本回复，请查看工具调用/工作区状态）"
+	}
+	mock = s.engName == "mock"
+
 	_, _ = s.appendLog("assistant", reply, cfg.Model, key)
 	return &models.ChatResponse{
 		Reply:        reply,
@@ -226,11 +160,9 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 }
 
 // StreamEmitter 是流式会话的输出回调。
-// kind: delta / thought / tool_call / usage / error
 type StreamEmitter func(kind string, payload map[string]any) error
 
 // ChatStream 流式执行一次会话请求（WebSocket 路径）。
-// 真实内核：ACP session/update 增量转发；mock：分片模拟流式。
 func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamEmitter) (*models.ChatResponse, error) {
 	cfg := s.cfg.Get()
 	key := s.sessionKey(req.SessionID)
@@ -239,62 +171,42 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
 
+	if ready, reason := s.eng.Ready(); !ready && s.engName != "mock" {
+		log.Printf("[session] 引擎 %s 不可用，回退 mock: %s", s.engName, reason)
+		mockEng, _ := engine.New("mock", s.workspace, cfg)
+		s.eng = mockEng
+		s.engName = "mock"
+	}
+
 	var reply string
 	var mock bool
-	if ready, _ := s.AcpReady(); ready {
-		var sb strings.Builder
-		filter := newHeadlineLineFilter(func(text string) {
-			sb.WriteString(text)
+
+	callbacks := &engine.Callbacks{
+		OnDelta: func(text string) {
 			if strings.TrimSpace(text) != "" {
 				_ = emit("delta", map[string]any{"text": text})
 			}
-		})
-		handler := UpdateHandlerFunc(func(u map[string]any) {
-			kind, _ := u["sessionUpdate"].(string)
-			switch kind {
-			case acpUpdateKindMessage:
-				if c, ok := u["content"].(map[string]any); ok {
-					if text, ok := c["text"].(string); ok && text != "" {
-						filter.Write(text)
-					}
-				}
-			case acpUpdateKindThought:
-				if c, ok := u["content"].(map[string]any); ok {
-					if text, ok := c["text"].(string); ok {
-						_ = emit("thought", map[string]any{"text": text})
-					}
-				}
-			case acpUpdateKindToolS, acpUpdateKindToolP:
-				_ = emit("tool_call", u)
-			case "usage_update":
-				_ = emit("usage", u)
-			}
-		})
-		s.promptMu.Lock()
-		_, err = s.acp.Prompt(ctx, key, req.Message, handler)
-		s.promptMu.Unlock()
-		if err != nil {
-			_ = emit("error", map[string]any{"message": err.Error()})
-			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
-			return nil, err
-		}
-		filter.Flush()
-		reply = stripHeadlineText(sb.String())
-	} else {
-		llm := NewLLM(cfg)
-		reply, err = llm.Complete(ctx, cfg, req.Message)
-		if err != nil {
-			_ = emit("error", map[string]any{"message": err.Error()})
-			_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
-			return nil, err
-		}
-		mock = llm.Name() == "mock"
-		for _, chunk := range chunkText(reply, 24) {
-			if err := emit("delta", map[string]any{"text": chunk}); err != nil {
-				return nil, err
-			}
-		}
+		},
+		OnThought: func(text string) {
+			_ = emit("thought", map[string]any{"text": text})
+		},
+		OnTool: func(update map[string]any) {
+			_ = emit("tool_call", update)
+		},
+		OnUsage: func(update map[string]any) {
+			_ = emit("usage", update)
+		},
 	}
+
+	s.promptMu.Lock()
+	reply, err = s.eng.Chat(ctx, key, req.Message, callbacks)
+	s.promptMu.Unlock()
+	if err != nil {
+		_ = emit("error", map[string]any{"message": err.Error()})
+		_, _ = s.appendLog("error", err.Error(), cfg.Model, key)
+		return nil, err
+	}
+	mock = s.engName == "mock"
 
 	_, _ = s.appendLog("assistant", reply, cfg.Model, key)
 	return &models.ChatResponse{
@@ -307,79 +219,48 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 	}, nil
 }
 
-// SyncConfig 模型热切换：让 ACP 内核感知配置变化（凭证变化 → 重启子进程）。
+// SyncConfig 模型热切换：通知引擎配置变化。
 func (s *Session) SyncConfig(ctx context.Context) {
-	s.acp.SyncConfig(ctx)
+	s.eng.SyncConfig(ctx)
 }
 
-// Close 停止 ACP 子进程（实例休眠/退出时调用）。
+// Close 停止引擎（沙箱休眠/退出时调用）。
 func (s *Session) Close() {
-	s.acp.Stop()
+	s.eng.Close()
+	s.cfg.Close()
 }
 
-// KernelStatus 返回 ACP 内核状态，供 /health 与可观测使用。
+// KernelStatus 返回引擎状态，供 /health 与可观测使用。
 func (s *Session) KernelStatus() map[string]any {
-	ready, reason := s.AcpReady()
-	name, version := s.acp.AgentInfo()
+	ready, reason := s.eng.Ready()
+	name, version := s.eng.Info()
 	if name == "" {
-		name = "qwenpaw"
+		name = s.engName
 	}
 	return map[string]any{
-		"name":        "qwenpaw-acp",
+		"name":        s.engName,
 		"enabled":     ready,
 		"reason":      reason,
-		"connected":   s.acp.Connected(),
+		"connected":   s.eng.Connected(),
 		"agent":       name,
 		"version":     version,
-		"lastRestart": s.acp.LastRestart().Format(time.RFC3339),
 	}
 }
 
-// sessionKey 返回本次请求使用的 ACP 会话 key：
-// 客户端显式传入则用传入值，否则用当前活动会话（新建会话后即新上下文）。
-func (s *Session) sessionKey(hint string) string {
-	if hint != "" {
-		return hint
-	}
-	return s.activeSess
-}
-
-// ActiveSession 返回当前活动会话 id（前端用于标识/展示）。
+// ActiveSession 返回当前活动会话 id。
 func (s *Session) ActiveSession() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.activeSess
+	if q, ok := s.eng.(interface{ ActiveSession() string }); ok {
+		return q.ActiveSession()
+	}
+	return "default"
 }
 
-// NewSession 让 QwenPaw 真正开启一个新会话：
-// 关闭旧 ACP 会话（释放 qwenpaw 内存上下文），创建全新 session/new，
-// 并切换为活动会话。返回新会话 id。
+// NewSession 让引擎开启一个新会话。
 func (s *Session) NewSession(ctx context.Context) (string, error) {
-	key := fmt.Sprintf("s-%d", time.Now().UnixNano())
-	s.mu.Lock()
-	old := s.activeSess
-	s.activeSess = key
-	s.mu.Unlock()
-
-	if old != "" && old != key {
-		s.acp.CloseSessionLocal(old)
-	}
-	// 主动创建 ACP 会话（session/new），确保 qwenpaw 侧上下文真实就绪。
-	if _, err := s.acp.SessionID(ctx, key); err != nil {
-		return "", err
-	}
-	return key, nil
+	return s.eng.NewSession(ctx)
 }
 
-func (s *Session) sessionID(hint string) string {
-	if hint != "" {
-		return hint
-	}
-	return fmt.Sprintf("local-%d", time.Now().UnixNano())
-}
-
-// History 返回最近 N 条会话记录；sessionID 非空时只返回该会话的记录
-// （供前端按会话展示，也用于 GET /v1/workspace 与可观测）。
+// History 返回最近 N 条会话记录。
 func (s *Session) History(n int, sessionID string) ([]map[string]any, error) {
 	data, err := os.ReadFile(s.LogPath())
 	if err != nil {
@@ -416,3 +297,17 @@ func (s *Session) History(n int, sessionID string) ([]map[string]any, error) {
 }
 
 func (s *Session) Workspace() string { return s.workspace }
+
+func (s *Session) sessionKey(hint string) string {
+	if hint != "" {
+		return hint
+	}
+	return s.ActiveSession()
+}
+
+func (s *Session) sessionID(hint string) string {
+	if hint != "" {
+		return hint
+	}
+	return fmt.Sprintf("local-%d", time.Now().UnixNano())
+}
