@@ -36,16 +36,16 @@ func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 
 func (p *Postgres) CreateInstance(ctx context.Context, inst *models.Instance) error {
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO agent_instances (user_id, instance_name, status, workspace, endpoint, port, error, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		inst.UserID, inst.InstanceName, string(inst.Status), inst.Workspace, inst.Endpoint, inst.Port, inst.Error,
+		INSERT INTO agent_instances (user_id, instance_name, status, workspace, endpoint, port, sandbox_id, error, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		inst.UserID, inst.InstanceName, string(inst.Status), inst.Workspace, inst.Endpoint, inst.Port, inst.SandboxID, inst.Error,
 		inst.CreatedAt, inst.UpdatedAt)
 	return err
 }
 
 func (p *Postgres) GetInstance(ctx context.Context, userID string) (*models.Instance, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT user_id, instance_name, status, workspace, endpoint, port, error, created_at, updated_at
+		SELECT user_id, instance_name, status, workspace, endpoint, port, sandbox_id, error, created_at, updated_at
 		FROM agent_instances WHERE user_id=$1`, userID)
 	inst, err := scanInstance(row)
 	if err == pgx.ErrNoRows {
@@ -56,7 +56,7 @@ func (p *Postgres) GetInstance(ctx context.Context, userID string) (*models.Inst
 
 func (p *Postgres) ListInstances(ctx context.Context) ([]*models.Instance, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT user_id, instance_name, status, workspace, endpoint, port, error, created_at, updated_at
+		SELECT user_id, instance_name, status, workspace, endpoint, port, sandbox_id, error, created_at, updated_at
 		FROM agent_instances ORDER BY user_id`)
 	if err != nil {
 		return nil, err
@@ -76,9 +76,9 @@ func (p *Postgres) ListInstances(ctx context.Context) ([]*models.Instance, error
 func (p *Postgres) UpdateInstance(ctx context.Context, inst *models.Instance) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE agent_instances
-		SET instance_name=$2, status=$3, workspace=$4, endpoint=$5, port=$6, error=$7, updated_at=$8
+		SET instance_name=$2, status=$3, workspace=$4, endpoint=$5, port=$6, sandbox_id=$7, error=$8, updated_at=$9
 		WHERE user_id=$1`,
-		inst.UserID, inst.InstanceName, string(inst.Status), inst.Workspace, inst.Endpoint, inst.Port, inst.Error, inst.UpdatedAt)
+		inst.UserID, inst.InstanceName, string(inst.Status), inst.Workspace, inst.Endpoint, inst.Port, inst.SandboxID, inst.Error, inst.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func scanInstance(row rowScanner) (*models.Instance, error) {
 	var inst models.Instance
 	var status string
 	err := row.Scan(&inst.UserID, &inst.InstanceName, &status, &inst.Workspace, &inst.Endpoint,
-		&inst.Port, &inst.Error, &inst.CreatedAt, &inst.UpdatedAt)
+		&inst.Port, &inst.SandboxID, &inst.Error, &inst.CreatedAt, &inst.UpdatedAt)
 	inst.Status = models.InstanceStatus(status)
 	return &inst, err
 }

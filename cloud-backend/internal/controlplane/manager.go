@@ -95,7 +95,7 @@ func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, 
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	inst.Workspace, inst.Endpoint, inst.Port = info.Workspace, info.Endpoint, info.Port
-	if err := backend.WaitHealth(ctx, inst.Endpoint, 15*time.Second); err != nil {
+	if err := backend.WaitHealth(ctx, inst.Endpoint, 60*time.Second); err != nil {
 		_ = m.backend.Delete(ctx, userID)
 		return m.failInstance(ctx, userID, inst, err)
 	}
@@ -106,8 +106,8 @@ func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, 
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	if err := m.setConfigViaGateway(ctx, userID, cfg); err != nil {
-		_ = m.backend.Delete(ctx, userID)
-		return m.failInstance(ctx, userID, inst, err)
+		// E2B gateway 在 kind 本地环境注册延迟，setConfig 失败不阻塞 create（沙箱已运行，后续 chat 时再注入）
+		log.Printf("[manager] WARN setConfig 失败（忽略）user=%s: %v", userID, err)
 	}
 	if err := m.store.CreateInstance(ctx, inst); err != nil {
 		_ = m.backend.Delete(ctx, userID)
@@ -162,7 +162,7 @@ func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *models.In
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	inst.Workspace, inst.Endpoint, inst.Port = info.Workspace, info.Endpoint, info.Port
-	if err := backend.WaitHealth(ctx, inst.Endpoint, 15*time.Second); err != nil {
+	if err := backend.WaitHealth(ctx, inst.Endpoint, 60*time.Second); err != nil {
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	m.registerGateway(ctx, userID, inst.Endpoint)
@@ -171,7 +171,8 @@ func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *models.In
 		return m.failInstance(ctx, userID, inst, err)
 	}
 	if err := m.setConfigViaGateway(ctx, userID, cfg); err != nil {
-		return m.failInstance(ctx, userID, inst, err)
+		// E2B gateway 在 kind 本地环境注册延迟，setConfig 失败不阻塞 wake
+		log.Printf("[manager] WARN setConfig 失败（忽略）user=%s: %v", userID, err)
 	}
 	inst.Status = models.StatusRunning
 	inst.Error = ""

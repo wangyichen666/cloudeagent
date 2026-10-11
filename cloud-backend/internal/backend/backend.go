@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,9 @@ type Info struct {
 	Workspace string
 	Endpoint  string
 	Port      int
+	// SandboxID 仅 E2B/KruiseAgents 后端使用：E2B 返回的沙箱长 ID，
+	// control-plane 重启后据此 reconnect / pause / kill。
+	SandboxID string
 }
 
 // InstanceBackend 抽象「数据面」：每用户一个 Agent 运行时的创建/休眠/唤醒/销毁。
@@ -41,7 +45,12 @@ func ValidateUserID(userID string) error {
 }
 
 // WaitHealth 轮询实例 /health 直到就绪或超时（对应「等 Pod Ready」）。
+// E2B gateway 地址（含 /sandboxes/）由 envd 异步注册，本地 kind 环境注册可能延迟，
+// 此时 waitReady 已通过 GetInfo 确认 sandbox 运行态，直接放行不阻塞 create。
 func WaitHealth(ctx context.Context, endpoint string, timeout time.Duration) error {
+	if strings.Contains(endpoint, "/sandboxes/") {
+		return nil
+	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

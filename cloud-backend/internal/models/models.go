@@ -20,8 +20,9 @@ type Instance struct {
 	InstanceName  string         `json:"instance_name"`            // agent-<userID>，对应 StatefulSet 名
 	Status        InstanceStatus `json:"status"`                   // running/suspended/failed/none
 	Workspace     string         `json:"workspace"`                // 本地路径或 Docker volume / PVC 名
-	Endpoint      string         `json:"endpoint"`                 // http://127.0.0.1:<port> 或 Pod DNS
+	Endpoint      string         `json:"endpoint"`                 // http://127.0.0.1:<port> 或 Pod DNS / Pod IP
 	Port          int            `json:"port"`                     // 本地模式的稳定路由端口（≈ Pod DNS）
+	SandboxID     string         `json:"sandbox_id,omitempty"`      // E2B sandbox ID（KruiseAgents 后端）
 	Error         string         `json:"error,omitempty"`          // failed 时的原因
 	LastActiveAt  time.Time      `json:"last_active_at"`           // 供 idle reaper 判定休眠
 	WSConnections int            `json:"ws_connections"`           // 活跃 WS 连接数（对应 agent_activity.ws_connections）

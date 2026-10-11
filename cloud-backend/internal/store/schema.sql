@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS agent_instances (
   workspace     TEXT NOT NULL DEFAULT '',
   endpoint      TEXT NOT NULL DEFAULT '',
   port          INT  NOT NULL DEFAULT 0,
+  sandbox_id    TEXT NOT NULL DEFAULT '',
   error         TEXT NOT NULL DEFAULT '',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
