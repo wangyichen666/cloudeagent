@@ -3,13 +3,13 @@ package controlplane
 import (
 	"context"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 // SeatService 抽象「身份/席位服务」（文档 2.1 外部依赖，可 mock）：
 // 控制面透传用户身份，换取 {baseURL, apiKey, 可用模型列表}，运行时注入实例。
 type SeatService interface {
-	Resolve(ctx context.Context, userID string) (*models.ModelConfig, error)
+	Resolve(ctx context.Context, userID string) (*domain.ModelConfig, error)
 }
 
 // MockSeatService 是本地实现的席位服务：返回固定配置，
@@ -32,8 +32,8 @@ func NewMockSeatService() *MockSeatService {
 	}
 }
 
-func (m *MockSeatService) Resolve(ctx context.Context, userID string) (*models.ModelConfig, error) {
-	return &models.ModelConfig{
+func (m *MockSeatService) Resolve(ctx context.Context, userID string) (*domain.ModelConfig, error) {
+	return &domain.ModelConfig{
 		BaseURL:  m.BaseURL,
 		APIKey:   m.APIKey,
 		Model:    m.Model,

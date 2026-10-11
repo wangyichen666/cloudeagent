@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 //go:embed schema.sql
@@ -34,7 +34,7 @@ func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 	return &Postgres{pool: pool}, nil
 }
 
-func (p *Postgres) CreateInstance(ctx context.Context, inst *models.Instance) error {
+func (p *Postgres) CreateInstance(ctx context.Context, inst *domain.Instance) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO agent_instances (user_id, instance_name, status, workspace, endpoint, port, sandbox_id, error, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -43,7 +43,7 @@ func (p *Postgres) CreateInstance(ctx context.Context, inst *models.Instance) er
 	return err
 }
 
-func (p *Postgres) GetInstance(ctx context.Context, userID string) (*models.Instance, error) {
+func (p *Postgres) GetInstance(ctx context.Context, userID string) (*domain.Instance, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT user_id, instance_name, status, workspace, endpoint, port, sandbox_id, error, created_at, updated_at
 		FROM agent_instances WHERE user_id=$1`, userID)
@@ -54,7 +54,7 @@ func (p *Postgres) GetInstance(ctx context.Context, userID string) (*models.Inst
 	return inst, err
 }
 
-func (p *Postgres) ListInstances(ctx context.Context) ([]*models.Instance, error) {
+func (p *Postgres) ListInstances(ctx context.Context) ([]*domain.Instance, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT user_id, instance_name, status, workspace, endpoint, port, sandbox_id, error, created_at, updated_at
 		FROM agent_instances ORDER BY user_id`)
@@ -62,7 +62,7 @@ func (p *Postgres) ListInstances(ctx context.Context) ([]*models.Instance, error
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]*models.Instance, 0)
+	out := make([]*domain.Instance, 0)
 	for rows.Next() {
 		inst, err := scanInstance(rows)
 		if err != nil {
@@ -73,7 +73,7 @@ func (p *Postgres) ListInstances(ctx context.Context) ([]*models.Instance, error
 	return out, rows.Err()
 }
 
-func (p *Postgres) UpdateInstance(ctx context.Context, inst *models.Instance) error {
+func (p *Postgres) UpdateInstance(ctx context.Context, inst *domain.Instance) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE agent_instances
 		SET instance_name=$2, status=$3, workspace=$4, endpoint=$5, port=$6, sandbox_id=$7, error=$8, updated_at=$9
@@ -125,7 +125,7 @@ func (p *Postgres) GetActivity(ctx context.Context, userID string) (*Activity, e
 	return &act, err
 }
 
-func (p *Postgres) CreateReview(ctx context.Context, r *models.Review) error {
+func (p *Postgres) CreateReview(ctx context.Context, r *domain.Review) error {
 	findings, _ := json.Marshal(r.Findings)
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO code_reviews (review_id, user_id, repo, pr_number, status, model, findings, error, created_at, updated_at)
@@ -134,7 +134,7 @@ func (p *Postgres) CreateReview(ctx context.Context, r *models.Review) error {
 	return err
 }
 
-func (p *Postgres) GetReview(ctx context.Context, userID, reviewID string) (*models.Review, error) {
+func (p *Postgres) GetReview(ctx context.Context, userID, reviewID string) (*domain.Review, error) {
 	r, err := p.scanReview(p.pool.QueryRow(ctx, `
 		SELECT review_id, user_id, repo, pr_number, status, model, findings, error, created_at, updated_at
 		FROM code_reviews WHERE review_id=$1 AND user_id=$2`, reviewID, userID))
@@ -144,7 +144,7 @@ func (p *Postgres) GetReview(ctx context.Context, userID, reviewID string) (*mod
 	return r, err
 }
 
-func (p *Postgres) ListReviews(ctx context.Context, userID string) ([]*models.Review, error) {
+func (p *Postgres) ListReviews(ctx context.Context, userID string) ([]*domain.Review, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT review_id, user_id, repo, pr_number, status, model, findings, error, created_at, updated_at
 		FROM code_reviews WHERE user_id=$1 ORDER BY created_at`, userID)
@@ -152,7 +152,7 @@ func (p *Postgres) ListReviews(ctx context.Context, userID string) ([]*models.Re
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]*models.Review, 0)
+	out := make([]*domain.Review, 0)
 	for rows.Next() {
 		r, err := p.scanReview(rows)
 		if err != nil {
@@ -163,7 +163,7 @@ func (p *Postgres) ListReviews(ctx context.Context, userID string) ([]*models.Re
 	return out, rows.Err()
 }
 
-func (p *Postgres) UpdateReview(ctx context.Context, r *models.Review) error {
+func (p *Postgres) UpdateReview(ctx context.Context, r *domain.Review) error {
 	findings, _ := json.Marshal(r.Findings)
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE code_reviews SET status=$3, findings=$4, error=$5, updated_at=$6 WHERE review_id=$1 AND user_id=$2`,
@@ -177,7 +177,7 @@ func (p *Postgres) UpdateReview(ctx context.Context, r *models.Review) error {
 	return nil
 }
 
-func (p *Postgres) SaveVCSToken(ctx context.Context, t *models.VCSToken) error {
+func (p *Postgres) SaveVCSToken(ctx context.Context, t *domain.VCSToken) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO user_vcs_tokens (user_id, platform, token) VALUES ($1,$2,$3)
 		ON CONFLICT (user_id, platform) DO UPDATE SET token = $3`,
@@ -185,8 +185,8 @@ func (p *Postgres) SaveVCSToken(ctx context.Context, t *models.VCSToken) error {
 	return err
 }
 
-func (p *Postgres) GetVCSToken(ctx context.Context, userID, platform string) (*models.VCSToken, error) {
-	var t models.VCSToken
+func (p *Postgres) GetVCSToken(ctx context.Context, userID, platform string) (*domain.VCSToken, error) {
+	var t domain.VCSToken
 	err := p.pool.QueryRow(ctx, `
 		SELECT user_id, platform, token FROM user_vcs_tokens WHERE user_id=$1 AND platform=$2`,
 		userID, platform).Scan(&t.UserID, &t.Platform, &t.Token)
@@ -205,17 +205,17 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanInstance(row rowScanner) (*models.Instance, error) {
-	var inst models.Instance
+func scanInstance(row rowScanner) (*domain.Instance, error) {
+	var inst domain.Instance
 	var status string
 	err := row.Scan(&inst.UserID, &inst.InstanceName, &status, &inst.Workspace, &inst.Endpoint,
 		&inst.Port, &inst.SandboxID, &inst.Error, &inst.CreatedAt, &inst.UpdatedAt)
-	inst.Status = models.InstanceStatus(status)
+	inst.Status = domain.InstanceStatus(status)
 	return &inst, err
 }
 
-func (p *Postgres) scanReview(row rowScanner) (*models.Review, error) {
-	var r models.Review
+func (p *Postgres) scanReview(row rowScanner) (*domain.Review, error) {
+	var r domain.Review
 	var findings []byte
 	err := row.Scan(&r.ID, &r.UserID, &r.Repo, &r.PRNumber, &r.Status, &r.Model,
 		&findings, &r.Error, &r.CreatedAt, &r.UpdatedAt)

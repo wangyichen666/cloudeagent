@@ -8,14 +8,14 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 // ModelConfigCache 是「热状态」：模型配置只存在于内存（或 Redis，带 TTL），
 // 绝不下沉到 PostgreSQL / PVC / 代码仓库。休眠后缓存可丢弃，唤醒时重新注入。
 type ModelConfigCache interface {
-	Set(ctx context.Context, userID string, cfg *models.ModelConfig, ttl time.Duration) error
-	Get(ctx context.Context, userID string) (*models.ModelConfig, error)
+	Set(ctx context.Context, userID string, cfg *domain.ModelConfig, ttl time.Duration) error
+	Get(ctx context.Context, userID string) (*domain.ModelConfig, error)
 	Delete(ctx context.Context, userID string) error
 }
 
@@ -27,7 +27,7 @@ type MemoryCache struct {
 }
 
 type cacheEntry struct {
-	cfg      models.ModelConfig
+	cfg      domain.ModelConfig
 	expireAt time.Time
 }
 
@@ -35,7 +35,7 @@ func NewMemoryCache(ttl time.Duration) *MemoryCache {
 	return &MemoryCache{ttl: ttl, data: make(map[string]cacheEntry)}
 }
 
-func (c *MemoryCache) Set(ctx context.Context, userID string, cfg *models.ModelConfig, ttl time.Duration) error {
+func (c *MemoryCache) Set(ctx context.Context, userID string, cfg *domain.ModelConfig, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if ttl <= 0 {
@@ -45,7 +45,7 @@ func (c *MemoryCache) Set(ctx context.Context, userID string, cfg *models.ModelC
 	return nil
 }
 
-func (c *MemoryCache) Get(ctx context.Context, userID string) (*models.ModelConfig, error) {
+func (c *MemoryCache) Get(ctx context.Context, userID string) (*domain.ModelConfig, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	entry, ok := c.data[userID]
@@ -80,7 +80,7 @@ func NewRedisCache(addr string, ttl time.Duration) (*RedisCache, error) {
 	return &RedisCache{client: client, ttl: ttl}, nil
 }
 
-func (c *RedisCache) Set(ctx context.Context, userID string, cfg *models.ModelConfig, ttl time.Duration) error {
+func (c *RedisCache) Set(ctx context.Context, userID string, cfg *domain.ModelConfig, ttl time.Duration) error {
 	if ttl <= 0 {
 		ttl = c.ttl
 	}
@@ -91,8 +91,8 @@ func (c *RedisCache) Set(ctx context.Context, userID string, cfg *models.ModelCo
 	return c.client.Set(ctx, key, safe, ttl).Err()
 }
 
-func (c *RedisCache) Get(ctx context.Context, userID string) (*models.ModelConfig, error) {
-	var cfg models.ModelConfig
+func (c *RedisCache) Get(ctx context.Context, userID string) (*domain.ModelConfig, error) {
+	var cfg domain.ModelConfig
 	key := "cloude:modelcfg:" + userID
 	if err := c.client.Get(ctx, key).Scan(&cfg); err != nil {
 		return nil, err

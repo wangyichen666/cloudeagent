@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 	"cloude-agent/internal/store"
 )
 
@@ -31,7 +31,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if inst.Status != models.StatusRunning {
+	if inst.Status != domain.StatusRunning {
 		t.Fatalf("期望 running，实际 %s", inst.Status)
 	}
 	if !bk.hasCall("create:u-1001") {
@@ -57,7 +57,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
-	if inst.Status != models.StatusSuspended {
+	if inst.Status != domain.StatusSuspended {
 		t.Fatalf("期望 suspended，实际 %s", inst.Status)
 	}
 	if !bk.hasCall("stop:u-1001") {
@@ -72,7 +72,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wake: %v", err)
 	}
-	if inst.Status != models.StatusRunning {
+	if inst.Status != domain.StatusRunning {
 		t.Fatalf("期望 running，实际 %s", inst.Status)
 	}
 	if !bk.hasCall("start:u-1001") {
@@ -89,7 +89,7 @@ func TestLifecycleStateMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	if persisted.Status != models.StatusRunning {
+	if persisted.Status != domain.StatusRunning {
 		t.Fatalf("store 中状态应为 running，实际 %s", persisted.Status)
 	}
 
@@ -122,7 +122,7 @@ func TestModelHotSwitch(t *testing.T) {
 	if _, err := mgr.Create(ctx, "u-2002"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	cfg := &models.ModelConfig{
+	cfg := &domain.ModelConfig{
 		BaseURL:  "https://api.example.com",
 		APIKey:   "sk-real-secret-1234",
 		Model:    "gpt-4.1",

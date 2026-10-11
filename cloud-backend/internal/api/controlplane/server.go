@@ -11,24 +11,25 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"cloude-agent/internal/models"
+	app "cloude-agent/internal/controlplane"
+	"cloude-agent/internal/domain"
 )
 
-// Config 汇聚控制面启动参数。
+// Config 汇聚控制面 HTTP 层启动参数。
 type Config struct {
 	Listen  string
-	Manager *Manager
-	Reaper  *Reaper
-	Review  *ReviewWorker
+	Manager *app.Manager
+	Reaper  *app.Reaper
+	Review  *app.ReviewWorker
 	Auth    *Authenticator
 }
 
 // Server 是控制面 HTTP 入口：REST 管理面 + WS 会话代理。
-// 前端只连控制面（文档 5.2 方案 A），Pod/容器完全不暴露。
+// 前端只连控制面，Pod/容器完全不暴露。
 type Server struct {
 	cfg       Config
 	upgrader  websocket.Upgrader
-	wsManager map[string]int // userID -> 连接数
+	wsManager map[string]int
 	wsMu      sync.Mutex
 }
 
@@ -62,11 +63,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/users/{id}/reviews", s.requireAdmin(s.handleCreateReview))
 	mux.HandleFunc("GET /v1/users/{id}/reviews", s.requireAdmin(s.handleListReviews))
 	mux.HandleFunc("GET /v1/users/{id}/reviews/{review_id}", s.requireAdmin(s.handleGetReview))
-	// 前端（Vite dev / 静态托管）跨域访问：放开 CORS 便于对接。
 	return s.cors(mux)
 }
 
-// cors 为 /v1 API 添加跨域头（本地演示默认全放开；生产可收敛到白名单）。
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -198,7 +197,7 @@ func (s *Server) handleWake(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetModels(w http.ResponseWriter, r *http.Request) {
-	var cfg models.ModelConfig
+	var cfg domain.ModelConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil || cfg.Model == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "需要 {\"base_url\",\"api_key\",\"model\",\"provider\"}")
 		return
@@ -245,7 +244,6 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleConnect 返回前端连接 Agent 所需信息：实例状态、内核、实例 token 与 WS 地址。
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
 	info, err := s.cfg.Manager.Connect(r.Context(), userID)
@@ -254,8 +252,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := s.cfg.Auth.DerivedToken(userID)
-	// WebSocket 必须经控制面转发（浏览器只能到控制面，Pod 内部地址不可达）。
-	// 基于请求 Host 构造，浏览器即可原路回连（支持端口转发/反向代理）。
 	scheme := "ws"
 	if r.TLS != nil {
 		scheme = "wss"
@@ -266,7 +262,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-// handleHistory 读取实例的持久化对话历史（保存于工作区，休眠/唤醒不丢）。
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	limit := 0
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -282,7 +277,6 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleNewSession 让 Pod 内的 QwenPaw 真实开启一个新会话。
 func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	out, err := s.cfg.Manager.NewSession(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -311,7 +305,7 @@ func (s *Server) handleCreateReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListReviews(w http.ResponseWriter, r *http.Request) {
-	reviews, err := s.cfg.Review.store.ListReviews(r.Context(), r.PathValue("id"))
+	reviews, err := s.cfg.Review.ListReviews(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -320,7 +314,7 @@ func (s *Server) handleListReviews(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
-	review, err := s.cfg.Review.store.GetReview(r.Context(), r.PathValue("id"), r.PathValue("review_id"))
+	review, err := s.cfg.Review.GetReview(r.Context(), r.PathValue("id"), r.PathValue("review_id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "评审记录不存在")
 		return
@@ -328,8 +322,7 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, review)
 }
 
-// handleSessionWS 是文档 5.2 方案 A 的 WebSocket 转发：
-// 前端连控制面，控制面按 userID 路由到实例，双向透传。
+// handleSessionWS 是 WebSocket 转发：前端连控制面，控制面按 userID 路由到实例，双向透传。
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
 	token := r.URL.Query().Get("token")
@@ -338,7 +331,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inst, err := s.cfg.Manager.Get(r.Context(), userID)
-	if err != nil || inst.Status != models.StatusRunning {
+	if err != nil || inst.Status != domain.StatusRunning {
 		writeError(w, http.StatusConflict, "not_running", "实例未运行，请先唤醒")
 		return
 	}
@@ -349,7 +342,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	// 流式会话经 gateway 转发到 Pod 内 agent（backend 不直连数据面）。
 	agentURL := s.cfg.Manager.GatewayWSURL(userID)
 	if agentURL == "" {
 		_ = clientConn.WriteJSON(map[string]any{"type": "error", "message": "未配置数据面网关（--gateway）"})
@@ -366,7 +358,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	defer s.addWS(userID, -1)
 	_ = s.cfg.Manager.TouchActivity(r.Context(), userID)
 
-	// 双向管道
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -403,14 +394,4 @@ func (s *Server) addWS(userID string, delta int) {
 		delete(s.wsManager, userID)
 	}
 	_ = s.cfg.Manager.SetWSConnections(context.Background(), userID, s.wsManager[userID])
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, code int, errCode, message string) {
-	writeJSON(w, code, map[string]any{"error": map[string]string{"code": errCode, "message": message}})
 }

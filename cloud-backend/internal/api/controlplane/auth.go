@@ -1,3 +1,6 @@
+// Package controlplane 是控制面的 HTTP/WS 接口层。
+// 只负责协议适配（路由、鉴权、序列化、WebSocket 转发），
+// 业务编排全部委托给 internal/controlplane 应用层。
 package controlplane
 
 import (
@@ -6,7 +9,7 @@ import (
 	"strings"
 )
 
-// Authenticator 实现文档「七、安全隔离」中的身份校验：
+// Authenticator 实现身份校验：
 //   - 管理面操作要求 Admin Bearer Token；
 //   - 会话/实例操作可按 sha256(ns:userID) 派生实例 token 放行，
 //     前端无需管理凭证即可连自己的 Agent。
@@ -19,7 +22,7 @@ func NewAuthenticator(namespace, adminToken string) *Authenticator {
 	return &Authenticator{namespace: namespace, adminToken: adminToken}
 }
 
-// DerivedToken 按文档派生：sha256(ns + userID)。
+// DerivedToken 按 sha256(ns + userID) 派生实例 token。
 func (a *Authenticator) DerivedToken(userID string) string {
 	h := sha256.Sum256([]byte(a.namespace + ":" + userID))
 	return hex.EncodeToString(h[:])

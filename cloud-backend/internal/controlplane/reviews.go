@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 	"cloude-agent/internal/store"
 )
 
@@ -21,22 +21,32 @@ import (
 // GitHub/GitLab 的 PR 评审需在接入 VCS OAuth 后扩展（文档 user_vcs_tokens）。
 type ReviewWorker struct {
 	store     store.Store
-	getConfig func(ctx context.Context, userID string) (*models.ModelConfig, error)
+	getConfig func(ctx context.Context, userID string) (*domain.ModelConfig, error)
 }
 
-func NewReviewWorker(st store.Store, getConfig func(ctx context.Context, userID string) (*models.ModelConfig, error)) *ReviewWorker {
+func NewReviewWorker(st store.Store, getConfig func(ctx context.Context, userID string) (*domain.ModelConfig, error)) *ReviewWorker {
 	return &ReviewWorker{store: st, getConfig: getConfig}
+}
+
+// ListReviews 列出用户的评审记录。
+func (w *ReviewWorker) ListReviews(ctx context.Context, userID string) ([]*domain.Review, error) {
+	return w.store.ListReviews(ctx, userID)
+}
+
+// GetReview 读取单条评审记录。
+func (w *ReviewWorker) GetReview(ctx context.Context, userID, reviewID string) (*domain.Review, error) {
+	return w.store.GetReview(ctx, userID, reviewID)
 }
 
 var reviewPattern = regexp.MustCompile(`(?i)\b(TODO|FIXME|HACK|XXX)\b[:：]?\s*(.*)`)
 
-func (w *ReviewWorker) Submit(ctx context.Context, userID, repo string, prNumber int) (*models.Review, error) {
+func (w *ReviewWorker) Submit(ctx context.Context, userID, repo string, prNumber int) (*domain.Review, error) {
 	cfg, err := w.getConfig(ctx, userID)
 	if err != nil {
-		cfg = &models.ModelConfig{Model: "unknown"}
+		cfg = &domain.ModelConfig{Model: "unknown"}
 	}
 	now := time.Now().UTC()
-	r := &models.Review{
+	r := &domain.Review{
 		ID:        newReviewID(),
 		UserID:    userID,
 		Repo:      repo,
@@ -63,7 +73,7 @@ func (w *ReviewWorker) run(reviewID, userID, repo string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	set := func(status string, findings []models.Finding, errMsg string) {
+	set := func(status string, findings []domain.Finding, errMsg string) {
 		r, err := w.store.GetReview(ctx, userID, reviewID)
 		if err != nil {
 			return
@@ -90,8 +100,8 @@ func (w *ReviewWorker) run(reviewID, userID, repo string) {
 	set("completed", findings, "")
 }
 
-func scanRepo(root string) ([]models.Finding, error) {
-	var out []models.Finding
+func scanRepo(root string) ([]domain.Finding, error) {
+	var out []domain.Finding
 	skip := map[string]bool{".git": true, "node_modules": true, "vendor": true, "bin": true, "data": true}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -119,7 +129,7 @@ func scanRepo(root string) ([]models.Finding, error) {
 			line := scanner.Text()
 			if m := reviewPattern.FindStringSubmatch(line); m != nil {
 				rel, _ := filepath.Rel(root, path)
-				out = append(out, models.Finding{
+				out = append(out, domain.Finding{
 					File:    rel,
 					Line:    lineNo,
 					Level:   "warning",

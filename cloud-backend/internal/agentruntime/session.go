@@ -1,4 +1,4 @@
-package agent
+package agentruntime
 
 import (
 	"context"
@@ -12,14 +12,8 @@ import (
 	"time"
 
 	"cloude-agent/internal/engine"
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
-
-// ChatRequest 是会话输入。
-type ChatRequest struct {
-	Message   string `json:"message"`
-	SessionID string `json:"session_id,omitempty"`
-}
 
 // Session 管理每个实例的工作区会话：
 // 对话历史持久化在 workspace/.agent/conversation.jsonl，
@@ -115,7 +109,7 @@ func (s *Session) appendLog(role, content, model, sessionID string) (int, error)
 }
 
 // Chat 同步执行一次会话请求（控制面 REST 路径）。
-func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatResponse, error) {
+func (s *Session) Chat(ctx context.Context, req *domain.ChatRequest) (*domain.ChatResponse, error) {
 	cfg := s.cfg.Get()
 	key := s.sessionKey(req.SessionID)
 	idx, err := s.appendLog("user", req.Message, cfg.Model, key)
@@ -149,7 +143,7 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 	mock = s.engName == "mock"
 
 	_, _ = s.appendLog("assistant", reply, cfg.Model, key)
-	return &models.ChatResponse{
+	return &domain.ChatResponse{
 		Reply:        reply,
 		Model:        cfg.Model,
 		Provider:     cfg.Provider,
@@ -163,7 +157,7 @@ func (s *Session) Chat(ctx context.Context, req *ChatRequest) (*models.ChatRespo
 type StreamEmitter func(kind string, payload map[string]any) error
 
 // ChatStream 流式执行一次会话请求（WebSocket 路径）。
-func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamEmitter) (*models.ChatResponse, error) {
+func (s *Session) ChatStream(ctx context.Context, req *domain.ChatRequest, emit StreamEmitter) (*domain.ChatResponse, error) {
 	cfg := s.cfg.Get()
 	key := s.sessionKey(req.SessionID)
 	idx, err := s.appendLog("user", req.Message, cfg.Model, key)
@@ -209,7 +203,7 @@ func (s *Session) ChatStream(ctx context.Context, req *ChatRequest, emit StreamE
 	mock = s.engName == "mock"
 
 	_, _ = s.appendLog("assistant", reply, cfg.Model, key)
-	return &models.ChatResponse{
+	return &domain.ChatResponse{
 		Reply:        reply,
 		Model:        cfg.Model,
 		Provider:     cfg.Provider,
@@ -297,6 +291,30 @@ func (s *Session) History(n int, sessionID string) ([]map[string]any, error) {
 }
 
 func (s *Session) Workspace() string { return s.workspace }
+
+// WorkspaceSummary 返回工作区文件列表与最近对话记录。
+func (s *Session) WorkspaceSummary() (map[string]any, error) {
+	entries, err := os.ReadDir(s.workspace)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		info, _ := e.Info()
+		files = append(files, map[string]any{
+			"name":  e.Name(),
+			"dir":   e.IsDir(),
+			"bytes": info.Size(),
+		})
+	}
+	history, _ := s.History(3, "")
+	return map[string]any{
+		"workspace": s.workspace,
+		"files":     files,
+		"recent":    history,
+		"kernel":    s.KernelStatus(),
+	}, nil
+}
 
 func (s *Session) sessionKey(hint string) string {
 	if hint != "" {

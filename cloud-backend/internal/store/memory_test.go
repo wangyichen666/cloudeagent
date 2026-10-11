@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 func TestMemoryInstanceCRUD(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemory()
-	inst := &models.Instance{
+	inst := &domain.Instance{
 		UserID:       "u-1",
 		InstanceName: "agent-u-1",
-		Status:       models.StatusRunning,
+		Status:       domain.StatusRunning,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -25,13 +25,13 @@ func TestMemoryInstanceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != models.StatusRunning {
+	if got.Status != domain.StatusRunning {
 		t.Fatalf("status: %s", got.Status)
 	}
 	if _, err := s.GetInstance(ctx, "u-404"); err != ErrNotFound {
 		t.Fatalf("期望 ErrNotFound，实际 %v", err)
 	}
-	inst.Status = models.StatusSuspended
+	inst.Status = domain.StatusSuspended
 	if err := s.UpdateInstance(ctx, inst); err != nil {
 		t.Fatal(err)
 	}

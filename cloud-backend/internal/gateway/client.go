@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 // Client 封装 gateway 的稳定 REST API。
@@ -79,13 +79,13 @@ func (c *Client) Unregister(ctx context.Context, userID string) error {
 }
 
 // Chat 经 gateway 转发同步对话。
-func (c *Client) Chat(ctx context.Context, userID, message, sessionID string) (*models.ChatResponse, error) {
+func (c *Client) Chat(ctx context.Context, userID, message, sessionID string) (*domain.ChatResponse, error) {
 	data, err := c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(userID)+"/chat", nil,
 		map[string]any{"message": message, "session_id": sessionID})
 	if err != nil {
 		return nil, err
 	}
-	var out models.ChatResponse
+	var out domain.ChatResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func (c *Client) Health(ctx context.Context, userID string) (map[string]any, err
 }
 
 // SetConfig 经 gateway 向实例注入模型配置（凭证仅内存，不落盘）。
-func (c *Client) SetConfig(ctx context.Context, userID string, cfg *models.ModelConfig) error {
+func (c *Client) SetConfig(ctx context.Context, userID string, cfg *domain.ModelConfig) error {
 	_, err := c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(userID)+"/config", nil, cfg)
 	return err
 }

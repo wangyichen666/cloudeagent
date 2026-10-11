@@ -8,7 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"cloude-agent/internal/agent"
+	apiagent "cloude-agent/internal/api/agent"
+	"cloude-agent/internal/agentruntime"
 )
 
 func main() {
@@ -40,14 +41,14 @@ func main() {
 		}
 	}
 
-	daemon, err := agent.NewDaemon(*workspace, *configFile, eng)
+	daemon, err := agentruntime.NewDaemon(*workspace, *configFile, eng)
 	if err != nil {
 		log.Fatalf("init agent: %v", err)
 	}
 
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           daemon.Handler(),
+		Handler:           apiagent.Handler(daemon),
 		ReadHeaderTimeout: 10 * 1e9,
 	}
 	go func() {

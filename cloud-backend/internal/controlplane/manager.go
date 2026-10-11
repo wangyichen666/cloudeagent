@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 	"cloude-agent/internal/sandbox"
 	"cloude-agent/internal/store"
 )
@@ -17,13 +17,13 @@ import (
 type AgentGateway interface {
 	Register(ctx context.Context, userID, endpoint string) error
 	Unregister(ctx context.Context, userID string) error
-	Chat(ctx context.Context, userID, message, sessionID string) (*models.ChatResponse, error)
+	Chat(ctx context.Context, userID, message, sessionID string) (*domain.ChatResponse, error)
 	Workspace(ctx context.Context, userID string) (map[string]any, error)
 	History(ctx context.Context, userID string, limit int, sessionID string) (map[string]any, error)
 	NewSession(ctx context.Context, userID string) (map[string]any, error)
 	SessionInfo(ctx context.Context, userID string) (string, error)
 	Health(ctx context.Context, userID string) (map[string]any, error)
-	SetConfig(ctx context.Context, userID string, cfg *models.ModelConfig) error
+	SetConfig(ctx context.Context, userID string, cfg *domain.ModelConfig) error
 	WSUpstreamURL(userID string) string
 }
 
@@ -63,7 +63,7 @@ func (m *Manager) registerGateway(ctx context.Context, userID, endpoint string) 
 }
 
 // Create 对应状态机 None -> Running：创建后端资源 -> 等 Ready -> 注入模型配置。
-func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, error) {
+func (m *Manager) Create(ctx context.Context, userID string) (*domain.Instance, error) {
 	if err := sandbox.ValidateUserID(userID); err != nil {
 		return nil, err
 	}
@@ -72,20 +72,20 @@ func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, 
 
 	if inst, err := m.store.GetInstance(ctx, userID); err == nil {
 		switch inst.Status {
-		case models.StatusRunning:
+		case domain.StatusRunning:
 			return inst, nil // 幂等
-		case models.StatusSuspended:
+		case domain.StatusSuspended:
 			return m.wakeLocked(ctx, userID, inst)
-		case models.StatusFailed:
+		case domain.StatusFailed:
 			_ = m.backend.Delete(ctx, userID)
 		}
 	}
 
 	now := time.Now().UTC()
-	inst := &models.Instance{
+	inst := &domain.Instance{
 		UserID:       userID,
 		InstanceName: "agent-" + userID,
-		Status:       models.StatusRunning,
+		Status:       domain.StatusRunning,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		LastActiveAt: now,
@@ -118,14 +118,14 @@ func (m *Manager) Create(ctx context.Context, userID string) (*models.Instance, 
 }
 
 // Suspend 对应 Running -> Suspended：停掉运行时，保留工作区（PVC 语义）。
-func (m *Manager) Suspend(ctx context.Context, userID string) (*models.Instance, error) {
+func (m *Manager) Suspend(ctx context.Context, userID string) (*domain.Instance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst, err := m.store.GetInstance(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if inst.Status != models.StatusRunning {
+	if inst.Status != domain.StatusRunning {
 		return inst, fmt.Errorf("实例当前状态为 %s，无法休眠", inst.Status)
 	}
 	if err := m.backend.Stop(ctx, userID); err != nil {
@@ -133,7 +133,7 @@ func (m *Manager) Suspend(ctx context.Context, userID string) (*models.Instance,
 	}
 	// 凭证不落盘：休眠即丢弃热缓存，唤醒时重新注入（文档 6.2）。
 	_ = m.cache.Delete(ctx, userID)
-	inst.Status = models.StatusSuspended
+	inst.Status = domain.StatusSuspended
 	inst.UpdatedAt = time.Now().UTC()
 	if err := m.store.UpdateInstance(ctx, inst); err != nil {
 		return nil, err
@@ -143,7 +143,7 @@ func (m *Manager) Suspend(ctx context.Context, userID string) (*models.Instance,
 }
 
 // Wake 对应 Suspended -> Running：重启运行时挂回同一工作区，重新注入模型配置。
-func (m *Manager) Wake(ctx context.Context, userID string) (*models.Instance, error) {
+func (m *Manager) Wake(ctx context.Context, userID string) (*domain.Instance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst, err := m.store.GetInstance(ctx, userID)
@@ -153,8 +153,8 @@ func (m *Manager) Wake(ctx context.Context, userID string) (*models.Instance, er
 	return m.wakeLocked(ctx, userID, inst)
 }
 
-func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *models.Instance) (*models.Instance, error) {
-	if inst.Status == models.StatusRunning {
+func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *domain.Instance) (*domain.Instance, error) {
+	if inst.Status == domain.StatusRunning {
 		return inst, nil
 	}
 	info, err := m.backend.Start(ctx, userID)
@@ -174,7 +174,7 @@ func (m *Manager) wakeLocked(ctx context.Context, userID string, inst *models.In
 		// E2B gateway 在 kind 本地环境注册延迟，setConfig 失败不阻塞 wake
 		log.Printf("[manager] WARN setConfig 失败（忽略）user=%s: %v", userID, err)
 	}
-	inst.Status = models.StatusRunning
+	inst.Status = domain.StatusRunning
 	inst.Error = ""
 	inst.UpdatedAt = time.Now().UTC()
 	inst.LastActiveAt = time.Now().UTC()
@@ -203,7 +203,7 @@ func (m *Manager) Delete(ctx context.Context, userID string) error {
 	return nil
 }
 
-func (m *Manager) Get(ctx context.Context, userID string) (*models.Instance, error) {
+func (m *Manager) Get(ctx context.Context, userID string) (*domain.Instance, error) {
 	return m.store.GetInstance(ctx, userID)
 }
 
@@ -219,10 +219,10 @@ func (m *Manager) Seed(ctx context.Context, infos []sandbox.Info) error {
 			continue
 		}
 		now := time.Now()
-		inst := &models.Instance{
+		inst := &domain.Instance{
 			UserID:       info.UserID,
 			InstanceName: "agent-" + info.UserID,
-			Status:       models.StatusRunning,
+			Status:       domain.StatusRunning,
 			Workspace:    info.Workspace,
 			Endpoint:     info.Endpoint,
 			Port:         info.Port,
@@ -239,19 +239,19 @@ func (m *Manager) Seed(ctx context.Context, infos []sandbox.Info) error {
 	return nil
 }
 
-func (m *Manager) List(ctx context.Context) ([]*models.Instance, error) {
+func (m *Manager) List(ctx context.Context) ([]*domain.Instance, error) {
 	return m.store.ListInstances(ctx)
 }
 
 // SetModelConfig 实现模型热切换：直接热加载到运行中的实例并更新热缓存。
-func (m *Manager) SetModelConfig(ctx context.Context, userID string, cfg *models.ModelConfig) (*models.Instance, error) {
+func (m *Manager) SetModelConfig(ctx context.Context, userID string, cfg *domain.ModelConfig) (*domain.Instance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst, err := m.store.GetInstance(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if inst.Status != models.StatusRunning {
+	if inst.Status != domain.StatusRunning {
 		return nil, fmt.Errorf("实例未运行，请先唤醒再切换模型")
 	}
 	if err := m.setConfigViaGateway(ctx, userID, cfg); err != nil {
@@ -263,7 +263,7 @@ func (m *Manager) SetModelConfig(ctx context.Context, userID string, cfg *models
 	return inst, nil
 }
 
-func (m *Manager) GetModelConfig(ctx context.Context, userID string) (*models.ModelConfig, error) {
+func (m *Manager) GetModelConfig(ctx context.Context, userID string) (*domain.ModelConfig, error) {
 	cfg, err := m.resolveConfig(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -272,7 +272,7 @@ func (m *Manager) GetModelConfig(ctx context.Context, userID string) (*models.Mo
 }
 
 // resolveConfig：用户覆盖（热缓存）优先，否则走席位服务。
-func (m *Manager) resolveConfig(ctx context.Context, userID string) (*models.ModelConfig, error) {
+func (m *Manager) resolveConfig(ctx context.Context, userID string) (*domain.ModelConfig, error) {
 	if cfg, err := m.cache.Get(ctx, userID); err == nil && cfg.BaseURL != "" {
 		return cfg, nil
 	}
@@ -280,7 +280,7 @@ func (m *Manager) resolveConfig(ctx context.Context, userID string) (*models.Mod
 }
 
 // setConfigViaGateway 经 gateway 向实例注入运行时模型配置（凭证仅驻留内存）。
-func (m *Manager) setConfigViaGateway(ctx context.Context, userID string, cfg *models.ModelConfig) error {
+func (m *Manager) setConfigViaGateway(ctx context.Context, userID string, cfg *domain.ModelConfig) error {
 	if m.gateway == nil {
 		return fmt.Errorf("未配置数据面网关（--gateway）")
 	}
@@ -288,7 +288,7 @@ func (m *Manager) setConfigViaGateway(ctx context.Context, userID string, cfg *m
 }
 
 // Chat 走控制面统一入口：鉴权/限流/审计都在这里做（文档 5.2 方案 A）。
-func (m *Manager) Chat(ctx context.Context, userID, message string) (*models.ChatResponse, error) {
+func (m *Manager) Chat(ctx context.Context, userID, message string) (*domain.ChatResponse, error) {
 	if _, err := m.ensureRunning(ctx, userID); err != nil {
 		return nil, err
 	}
@@ -301,12 +301,12 @@ func (m *Manager) Chat(ctx context.Context, userID, message string) (*models.Cha
 }
 
 // ensureRunning 保证实例运行（文档：唤醒后再路由）。
-func (m *Manager) ensureRunning(ctx context.Context, userID string) (*models.Instance, error) {
+func (m *Manager) ensureRunning(ctx context.Context, userID string) (*domain.Instance, error) {
 	inst, err := m.store.GetInstance(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if inst.Status != models.StatusRunning {
+	if inst.Status != domain.StatusRunning {
 		return nil, fmt.Errorf("实例状态为 %s，请先 POST /v1/users/%s/wake 唤醒", inst.Status, userID)
 	}
 	return inst, nil
@@ -381,8 +381,8 @@ func (m *Manager) GatewayWSURL(userID string) string {
 	return m.gateway.WSUpstreamURL(userID)
 }
 
-func (m *Manager) failInstance(ctx context.Context, userID string, inst *models.Instance, err error) (*models.Instance, error) {
-	inst.Status = models.StatusFailed
+func (m *Manager) failInstance(ctx context.Context, userID string, inst *domain.Instance, err error) (*domain.Instance, error) {
+	inst.Status = domain.StatusFailed
 	inst.Error = err.Error()
 	inst.UpdatedAt = time.Now().UTC()
 	if _, getErr := m.store.GetInstance(ctx, userID); getErr == nil {

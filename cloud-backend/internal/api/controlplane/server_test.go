@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	app "cloude-agent/internal/controlplane"
 	"cloude-agent/internal/store"
 )
 
@@ -19,9 +20,9 @@ func TestServerEndToEnd(t *testing.T) {
 	bk.setEndpoint("u-3001", agent.URL)
 
 	st := store.NewMemory()
-	manager := NewManager(st, store.NewMemoryCache(time.Hour), bk, NewMockSeatService(), newStubGateway())
-	reaper := NewReaper(manager, 0, time.Minute)
-	review := NewReviewWorker(st, manager.GetModelConfig)
+	manager := app.NewManager(st, store.NewMemoryCache(time.Hour), bk, app.NewMockSeatService(), newStubGateway())
+	reaper := app.NewReaper(manager, 0, time.Minute)
+	review := app.NewReviewWorker(st, manager.GetModelConfig)
 	auth := NewAuthenticator("cloude-agent", "admin-token")
 	srv := NewServer(Config{Listen: ":0", Manager: manager, Reaper: reaper, Review: review, Auth: auth})
 	ts := httptest.NewServer(srv.Handler())

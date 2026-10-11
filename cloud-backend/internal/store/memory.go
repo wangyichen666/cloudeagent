@@ -6,29 +6,29 @@ import (
 	"sync"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 // Memory 是零依赖的内存存储，用于本地开发与演示。
 // 注意：ModelConfig 从不经由此处持久化（文档 6.2 的凭证安全约束）。
 type Memory struct {
 	mu        sync.RWMutex
-	instances map[string]*models.Instance
+	instances map[string]*domain.Instance
 	activity  map[string]*Activity
-	reviews   map[string]*models.Review
-	vcs       map[string]*models.VCSToken
+	reviews   map[string]*domain.Review
+	vcs       map[string]*domain.VCSToken
 }
 
 func NewMemory() *Memory {
 	return &Memory{
-		instances: make(map[string]*models.Instance),
+		instances: make(map[string]*domain.Instance),
 		activity:  make(map[string]*Activity),
-		reviews:   make(map[string]*models.Review),
-		vcs:       make(map[string]*models.VCSToken),
+		reviews:   make(map[string]*domain.Review),
+		vcs:       make(map[string]*domain.VCSToken),
 	}
 }
 
-func (m *Memory) CreateInstance(ctx context.Context, inst *models.Instance) error {
+func (m *Memory) CreateInstance(ctx context.Context, inst *domain.Instance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *inst
@@ -36,7 +36,7 @@ func (m *Memory) CreateInstance(ctx context.Context, inst *models.Instance) erro
 	return nil
 }
 
-func (m *Memory) GetInstance(ctx context.Context, userID string) (*models.Instance, error) {
+func (m *Memory) GetInstance(ctx context.Context, userID string) (*domain.Instance, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	inst, ok := m.instances[userID]
@@ -47,10 +47,10 @@ func (m *Memory) GetInstance(ctx context.Context, userID string) (*models.Instan
 	return &cp, nil
 }
 
-func (m *Memory) ListInstances(ctx context.Context) ([]*models.Instance, error) {
+func (m *Memory) ListInstances(ctx context.Context) ([]*domain.Instance, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*models.Instance, 0, len(m.instances))
+	out := make([]*domain.Instance, 0, len(m.instances))
 	for _, inst := range m.instances {
 		cp := *inst
 		out = append(out, &cp)
@@ -59,7 +59,7 @@ func (m *Memory) ListInstances(ctx context.Context) ([]*models.Instance, error) 
 	return out, nil
 }
 
-func (m *Memory) UpdateInstance(ctx context.Context, inst *models.Instance) error {
+func (m *Memory) UpdateInstance(ctx context.Context, inst *domain.Instance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.instances[inst.UserID]; !ok {
@@ -114,7 +114,7 @@ func (m *Memory) GetActivity(ctx context.Context, userID string) (*Activity, err
 	return &Activity{UserID: userID, LastActiveAt: time.Now()}, nil
 }
 
-func (m *Memory) CreateReview(ctx context.Context, r *models.Review) error {
+func (m *Memory) CreateReview(ctx context.Context, r *domain.Review) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *r
@@ -122,7 +122,7 @@ func (m *Memory) CreateReview(ctx context.Context, r *models.Review) error {
 	return nil
 }
 
-func (m *Memory) GetReview(ctx context.Context, userID, reviewID string) (*models.Review, error) {
+func (m *Memory) GetReview(ctx context.Context, userID, reviewID string) (*domain.Review, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	r, ok := m.reviews[reviewID]
@@ -133,10 +133,10 @@ func (m *Memory) GetReview(ctx context.Context, userID, reviewID string) (*model
 	return &cp, nil
 }
 
-func (m *Memory) ListReviews(ctx context.Context, userID string) ([]*models.Review, error) {
+func (m *Memory) ListReviews(ctx context.Context, userID string) ([]*domain.Review, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*models.Review, 0)
+	out := make([]*domain.Review, 0)
 	for _, r := range m.reviews {
 		if r.UserID == userID {
 			cp := *r
@@ -147,7 +147,7 @@ func (m *Memory) ListReviews(ctx context.Context, userID string) ([]*models.Revi
 	return out, nil
 }
 
-func (m *Memory) UpdateReview(ctx context.Context, r *models.Review) error {
+func (m *Memory) UpdateReview(ctx context.Context, r *domain.Review) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.reviews[r.ID]; !ok {
@@ -158,7 +158,7 @@ func (m *Memory) UpdateReview(ctx context.Context, r *models.Review) error {
 	return nil
 }
 
-func (m *Memory) SaveVCSToken(ctx context.Context, t *models.VCSToken) error {
+func (m *Memory) SaveVCSToken(ctx context.Context, t *domain.VCSToken) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *t
@@ -166,7 +166,7 @@ func (m *Memory) SaveVCSToken(ctx context.Context, t *models.VCSToken) error {
 	return nil
 }
 
-func (m *Memory) GetVCSToken(ctx context.Context, userID, platform string) (*models.VCSToken, error) {
+func (m *Memory) GetVCSToken(ctx context.Context, userID, platform string) (*domain.VCSToken, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if t, ok := m.vcs[userID+"|"+platform]; ok {

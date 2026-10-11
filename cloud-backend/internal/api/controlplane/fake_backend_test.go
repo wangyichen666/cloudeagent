@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 	"cloude-agent/internal/sandbox"
 )
 
@@ -81,7 +81,7 @@ func fakeAgentServer(t interface{ Helper() }) *httptest.Server {
 			Message string `json:"message"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		_ = json.NewEncoder(w).Encode(models.ChatResponse{
+		_ = json.NewEncoder(w).Encode(domain.ChatResponse{
 			Reply:        "echo:" + req.Message,
 			Model:        "fake-model",
 			Provider:     "fake",

@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"cloude-agent/internal/models"
+	"cloude-agent/internal/domain"
 )
 
 // Reaper 对应文档 4.3 的 Idle Reaper：
@@ -42,7 +42,7 @@ func (r *Reaper) Run(ctx context.Context) {
 				continue
 			}
 			for _, inst := range instances {
-				if inst.Status != models.StatusRunning {
+				if inst.Status != domain.StatusRunning {
 					continue
 				}
 				act, _ := r.manager.store.GetActivity(ctx, inst.UserID)
